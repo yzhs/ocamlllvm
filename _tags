@@ -1,0 +1,13 @@
+<src/{asmcomp,bytecomp,driver,parsing,toplevel,typing,utils}>: include
+<src/*/*.ml{,i}>: pkg_dynlink, pkg_findlib
+"src/ocmalllvm.native": link_llvm
+#<src/*/*.mlp>: process_mlp
+
+# OASIS_START
+# DO NOT EDIT (digest: 3ffc46df62a60cbbfb46eaf06d424c39)
+# Executable ocamlllvm
+"src/ocamlllvm.byte": pkg_findlib
+"src/ocamlllvm.byte": pkg_dynlink
+<src/*.ml{,i}>: pkg_findlib
+<src/*.ml{,i}>: pkg_dynlink
+# OASIS_STOP

@@ -1,0 +1,62 @@
+OASISFormat:  0.2
+Name:         ocamlllvm
+Version:      0.1
+OCamlVersion: >= 3.12.1
+LicenseFile:  LICENSE
+License:      QPL
+BuildType:    ocamlbuild (0.2)
+Authors:
+  Benedikt Meurer <benedikt.meurer@googlemail.com>,
+  Marcell Fischbach <marcellfischbach@googlemail.com>
+Maintainers: Benedikt Meurer <benedikt.meurer@googlemail.com>
+Copyrights:
+  (c) 1996-2011 INRIA Rocquencourt,
+  (c) 2010-2011 Benedikt Meurer,
+  (c) 2011 University of Siegen
+FilesAB:      src/utils/config.ml.ab
+Homepage:     http://benediktmeurer.de/ocamlnat
+Plugins:      DevFiles (0.2), StdFiles (0.2)
+BuildTools:   ocamlbuild
+
+Synopsis:     A native toplevel for the OCaml language
+Description:
+  The native toplevel permits interactive use of OCaml system through
+  a read-eval-print loop, similar to the standard OCaml toplevel that
+  ships with OCaml. But while the standard OCaml toplevel makes use
+  of the byte code compiler and runtime to compile and execute the
+  toplevel phrases, ocamlnat uses the optimizing native code compiler
+  and its runtime for compilation and code execution, which is up to
+  100 times faster than the byte code runtime.
+
+  ocamlnat currently supports amd64 and i386 systems running either
+  Linux or Mac OS X. It may also work with Microsoft Windows, but we
+  don't officially support it.
+
+XStdFilesAUTHORSFileName: AUTHORS
+XStdFilesINSTALLFileName: INSTALL
+XStdFilesREADMEFileName:  README
+
+Executable ocamlllvm
+  Path: src
+  MainIs: ocamlllvm.ml
+#  CSources: jitrun/camlnat.h, jitrun/jit.c, jitrun/str.c
+  BuildDepends: dynlink, findlib (>= 1.2.7)
+  CompiledObject: byte
+
+#Executable test
+#  Path: tests
+#  MainIs: test.ml
+#  Install: false
+#  BuildDepends: oUnit (>= 1.1.0)
+#  CompiledObject: best
+
+#Test main
+#  TestTools: ocamlllvm, test
+#  Command: $test -ocamlllvm $ocamlllvm
+#  WorkingDirectory: tests
+
+SourceRepository master
+  Type: git
+  Branch: master
+  Browser: https://github.com/bmeurer/ocamlnat
+  Location: git://github.com/bmeurer/ocamlnat.git

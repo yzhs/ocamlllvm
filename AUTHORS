@@ -1,0 +1,9 @@
+(* OASIS_START *)
+(* DO NOT EDIT (digest: 71f2b40021e0daf09487dd34993a0740) *)
+Authors of ocamlllvm
+Benedikt Meurer <benedikt.meurer@googlemail.com>
+Marcell Fischbach <marcellfischbach@googlemail.com>
+
+Current maintainers of ocamlllvm
+Benedikt Meurer <benedikt.meurer@googlemail.com>
+(* OASIS_STOP *)

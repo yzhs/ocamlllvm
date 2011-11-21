@@ -1,0 +1,29 @@
+(* OASIS_START *)
+(* DO NOT EDIT (digest: b7f180936057a776501f0051e8afb8d1) *)
+This is the README file for the ocamlllvm distribution.
+
+(c) 1996-2011 INRIA Rocquencourt
+
+(c) 2010-2011 Benedikt Meurer
+
+(c) 2011 University of Siegen
+
+A native toplevel for the OCaml language
+
+The native toplevel permits interactive use of OCaml system through a
+read-eval-print loop, similar to the standard OCaml toplevel that ships with
+OCaml. But while the standard OCaml toplevel makes use of the byte code
+compiler and runtime to compile and execute the toplevel phrases, ocamlnat
+uses the optimizing native code compiler and its runtime for compilation and
+code execution, which is up to 100 times faster than the byte code runtime.
+ocamlnat currently supports amd64 and i386 systems running either Linux or
+Mac OS X. It may also work with Microsoft Windows, but we don't officially
+support it.
+
+See the files INSTALL for building and installation instructions. See the
+file LICENSE for copying conditions. 
+
+Home page: http://benediktmeurer.de/ocamlnat
+
+
+(* OASIS_STOP *)
