@@ -94,6 +94,8 @@ val model: string
 val system: string
         (* Name of operating system for the native-code compiler *)
 
+val llc: string
+        (* The LLVM assembly to native code compiler *)
 val asm: string
         (* The assembler (and flags) to use for assembling
            ocamlopt-generated code. *)

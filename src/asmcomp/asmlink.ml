@@ -203,12 +203,15 @@ let make_startup_file ppf filename units_list =
   Emitaux.output_channel := oc;
   Location.input_name := "caml_startup"; (* set name of "current" input *)
   Compilenv.reset "_startup"; (* set the name of the "current" compunit *)
-  Emit.begin_assembly();
+  if !Clflags.use_llvm then Llvmemit.begin_assembly()
+  else Emit.begin_assembly();
   let name_list =
     List.flatten (List.map (fun (info,_,_) -> info.ui_defines) units_list) in
   compile_phrase (Cmmgen.entry_point name_list);
   let units = List.map (fun (info,_,_) -> info) units_list in
-  List.iter compile_phrase (Cmmgen.generic_functions false units);
+  let tmp = Cmmgen.generic_functions false units in
+  List.iter Llvmcompile.read_function tmp;
+  List.iter compile_phrase tmp;
   Array.iter
     (fun name -> compile_phrase (Cmmgen.predef_exception name))
     Runtimedef.builtin_exceptions;
@@ -227,7 +230,8 @@ let make_startup_file ppf filename units_list =
   compile_phrase
     (Cmmgen.frame_table("_startup" :: "_system" :: name_list));
 
-  Emit.end_assembly();
+  if !Clflags.use_llvm then Llvmemit.end_assembly()
+  else Emit.end_assembly();
   close_out oc
 
 let make_shared_startup_file ppf units filename =
@@ -252,7 +256,7 @@ let make_shared_startup_file ppf units filename =
 
 let call_linker_shared file_list output_name =
   if not (Ccomp.call_linker Ccomp.Dll output_name file_list "")
-  then raise(Error Linking_error)
+  then (print_endline "call_linker_shared failed"; raise(Error Linking_error))
 
 let link_shared ppf objfiles output_name =
   let units_tolink = List.fold_right scan_file objfiles [] in
@@ -295,7 +299,7 @@ let call_linker file_list startup_file output_name =
     else Ccomp.Exe
   in
   if not (Ccomp.call_linker mode output_name files c_lib)
-  then raise(Error Linking_error)
+  then (print_endline "call_linker failed"; raise(Error Linking_error))
 
 (* Main entry point *)
 
@@ -324,8 +328,16 @@ let link ppf objfiles output_name =
     else Filename.temp_file "camlstartup" ext_asm in
   make_startup_file ppf startup units_tolink;
   let startup_obj = Filename.temp_file "camlstartup" ext_obj in
-  if Proc.assemble_file startup startup_obj <> 0 then
-    raise(Error(Assembler_error startup));
+  let startup_asm =
+    if !Clflags.keep_startup_file then output_name ^ ".startup.ll.s"
+    else Filename.temp_file "camlstartup" ".ll.s" in
+  let llvm_temp = Filename.temp_file "camlstartup" (".ll" ^ext_asm) in
+  if !Clflags.use_llvm then begin
+    if Llvmemit.assemble_file startup llvm_temp startup_obj <> 0 then
+    raise(Error(Assembler_error startup_asm));
+  end else
+    if Proc.assemble_file startup startup_obj <> 0
+    then raise(Error(Assembler_error startup));
   try
     call_linker (List.map object_file_name objfiles) startup_obj output_name;
     if not !Clflags.keep_startup_file then remove_file startup;

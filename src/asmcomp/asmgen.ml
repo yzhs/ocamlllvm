@@ -81,8 +81,8 @@ let compile_phrase ppf p =
   if !dump_cmm then fprintf ppf "%a@." Printcmm.phrase p;
   if !use_llvm then
   match p with
-  | Cfunction fd -> Llvmcompile.compile_fundecl (*ppf*) fd
-  | Cdata dl -> begin (*Emit.data dl;*) Llvmcompile.data dl end
+  | Cfunction fd -> Llvmcompile.compile_fundecl fd
+  | Cdata dl -> Llvmcompile.data dl
   else
   match p with
   | Cfunction fd -> compile_fundecl ppf fd
@@ -108,10 +108,11 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
   begin try
     Emitaux.output_channel := oc;
     if !use_llvm
-    then Llvmemit.emit_header()
+    then Llvmemit.begin_assembly()
     else Emit.begin_assembly();
     Closure.intro size lam
     ++ Cmmgen.compunit size
+    ++ List.map (fun x -> Llvmcompile.read_function x; x)
     ++ List.iter (compile_phrase ppf) ++ (fun () -> ());
     (match toplevel with None -> () | Some f -> compile_genfuns ppf f);
 
@@ -127,7 +128,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
             (List.map Primitive.native_name !Translmod.primitive_declarations))
       );
 
-    if !use_llvm then ()
+    if !use_llvm then Llvmemit.end_assembly()
     else Emit.end_assembly();
     close_out oc
   with x ->
@@ -135,12 +136,19 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
     if !keep_asm_file then () else remove_file asmfile;
     raise x
   end;
-  if !use_llvm then () (* TODO run llvm to assemble the previously generated llvm assembly *)
-  else begin
-  if Proc.assemble_file asmfile (prefixname ^ ext_obj) <> 0
-  then raise(Error(Assembler_error asmfile))
+  let tmpfile = prefixname ^ ".ll" ^ ext_asm in
+  if !use_llvm then begin
+    if Llvmemit.assemble_file asmfile tmpfile (prefixname ^ ext_obj) <> 0
+    then raise(Error(Assembler_error asmfile));
+  end else begin
+    if Proc.assemble_file asmfile (prefixname ^ ext_obj) <> 0
+    then raise(Error(Assembler_error asmfile))
   end;
-  if !keep_asm_file then () else remove_file asmfile
+  if !keep_asm_file then ()
+  else begin
+    if !use_llvm then remove_file tmpfile;
+    remove_file asmfile
+  end
 
 (* Error report *)
 
