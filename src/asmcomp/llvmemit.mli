@@ -8,7 +8,8 @@ type llvm_type =
   | Integer of int (* bitwidth *)
   | Double
   | Address of llvm_type
-  | Return_type
+  | Return3
+  | Return2
   | Void
   | Any
   | Function of llvm_type * llvm_type list (* return type, argument types *)
@@ -25,9 +26,7 @@ val typename : llvm_type -> string
 val deref : llvm_type -> llvm_type
 
 type llvm_instr =
-  | Llocal_load of string * llvm_type (* name, type *)
-  | Llocal_store of string * llvm_type (* name, type *)
-  | Lalias of string * llvm_instr (* name, value *)
+  | Lvar of string * llvm_type (* name, type *)
   | Lbinop of string * llvm_type * llvm_instr * llvm_instr (* op, typ, left, right *)
   | Lcomp of string * llvm_type * llvm_instr * llvm_instr (* op, typ, left, right *)
   | Lunop of string * llvm_type * llvm_instr (* op, typ, arg *)
@@ -43,6 +42,7 @@ type llvm_instr =
   | Lfptosi of llvm_instr * llvm_type * llvm_type (* value, source type, target type *)
   | Lgetelementptr of llvm_instr * llvm_instr (* address, offset *)
   | Lcall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments *)
+  | Ltailcall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments *)
   | Lccall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments; using c calling convention *)
   | Lconst of string * llvm_type (* literal, type *)
   | Llabel of string (* name *)
@@ -80,4 +80,4 @@ val emit_llvm : llvm_instr -> string error
 val to_string : llvm_instr -> string
 val data : Cmm.data_item list -> unit
 
-val assemble_file : string -> string -> string -> int
+val assemble_file : string -> string -> string -> string -> int

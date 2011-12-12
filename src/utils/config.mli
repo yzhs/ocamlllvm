@@ -94,16 +94,20 @@ val model: string
 val system: string
         (* Name of operating system for the native-code compiler *)
 
-val llc: string
-        (* The LLVM assembly to native code compiler *)
 val asm: string
         (* The assembler (and flags) to use for assembling
            ocamlopt-generated code. *)
+val llc: string
+        (* The LLVM assembly to native code compiler *)
+val opt: string
+        (* The LLVM optimizer *)
 
 val ext_obj: string
         (* Extension for object files, e.g. [.o] under Unix. *)
 val ext_asm: string
         (* Extension for assembler files, e.g. [.s] under Unix. *)
+val ext_llvm: string
+        (* Extension for llvm assembly files. *)
 val ext_lib: string
         (* Extension for library files, e.g. [.a] under Unix. *)
 val ext_dll: string

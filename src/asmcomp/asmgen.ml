@@ -107,9 +107,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
   let oc = open_out asmfile in
   begin try
     Emitaux.output_channel := oc;
-    if !use_llvm
-    then Llvmemit.begin_assembly()
-    else Emit.begin_assembly();
+    if !use_llvm then Llvmemit.begin_assembly() else Emit.begin_assembly();
     Closure.intro size lam
     ++ Cmmgen.compunit size
     ++ List.map (fun x -> Llvmcompile.read_function x; x)
@@ -128,26 +126,29 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
             (List.map Primitive.native_name !Translmod.primitive_declarations))
       );
 
-    if !use_llvm then Llvmemit.end_assembly()
-    else Emit.end_assembly();
+    if !use_llvm then Llvmemit.end_assembly() else Emit.end_assembly();
     close_out oc
   with x ->
     close_out oc;
     if !keep_asm_file then () else remove_file asmfile;
     raise x
   end;
-  let tmpfile = prefixname ^ ".ll" ^ ext_asm in
-  if !use_llvm then begin
-    if Llvmemit.assemble_file asmfile tmpfile (prefixname ^ ext_obj) <> 0
+  let temp1 =
+    if !Clflags.keep_asm_file then prefixname ^ ".opt" ^ ext_llvm
+    else Filename.temp_file (prefixname ^ ".opt") ext_llvm
+  in
+  let temp2 =
+    if !Clflags.keep_asm_file then prefixname ^ ext_asm
+    else Filename.temp_file prefixname ext_asm
+  in
+  let assemble = if !use_llvm then Llvmemit.assemble_file temp1 temp2 else Proc.assemble_file in
+  if assemble asmfile (prefixname ^ ext_obj) <> 0
     then raise(Error(Assembler_error asmfile));
-  end else begin
-    if Proc.assemble_file asmfile (prefixname ^ ext_obj) <> 0
-    then raise(Error(Assembler_error asmfile))
-  end;
   if !keep_asm_file then ()
   else begin
-    if !use_llvm then remove_file tmpfile;
-    remove_file asmfile
+    remove_file asmfile;
+    remove_file temp1;
+    remove_file temp2
   end
 
 (* Error report *)
