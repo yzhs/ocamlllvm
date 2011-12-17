@@ -14,8 +14,6 @@ let is_int = function Integer _ -> true | _ -> false
 let vars = Hashtbl.create 10
 let is_def = Hashtbl.mem vars
 
-let functions = ref []
-
 (* {{{ *)
 let translate_op = function
   | Caddi -> "add"
@@ -43,28 +41,28 @@ let translate_mem = function
   | Single | Cmm.Double | Double_u -> Double
 
 let translate_fcomp = function
-  | Ceq -> "oeq"
-  | Cne -> "one"
-  | Clt -> "olt"
-  | Cle -> "ole"
-  | Cgt -> "ogt"
-  | Cge -> "oge"
+  | Ceq -> "fcmp oeq"
+  | Cne -> "fcmp one"
+  | Clt -> "fcmp olt"
+  | Cle -> "fcmp ole"
+  | Cgt -> "fcmp ogt"
+  | Cge -> "fcmp oge"
 
 let translate_icomp = function
-  | Ceq -> "eq"
-  | Cne -> "ne"
-  | Clt -> "slt"
-  | Cle -> "sle"
-  | Cgt -> "sgt"
-  | Cge -> "sge"
+  | Ceq -> "icmp eq"
+  | Cne -> "icmp ne"
+  | Clt -> "icmp slt"
+  | Cle -> "icmp sle"
+  | Cgt -> "icmp sgt"
+  | Cge -> "icmp sge"
 
 let translate_ucomp = function
-  | Ceq -> "eq"
-  | Cne -> "ne"
-  | Clt -> "ult"
-  | Cle -> "ule"
-  | Cgt -> "ugt"
-  | Cge -> "uge"
+  | Ceq -> "icmp eq"
+  | Cne -> "icmp ne"
+  | Clt -> "icmp ult"
+  | Cle -> "icmp ule"
+  | Cgt -> "icmp ugt"
+  | Cge -> "icmp uge"
 
 let translate_symbol s =
   let result = ref "" in
@@ -85,45 +83,6 @@ let translate_machtype = function
 (* }}} *)
 
 (* {{{ *)
-let rec cmm_to_string = function
-  | Cconst_int i -> "(int " ^ string_of_int i ^ ")"
-  | Cconst_natint i -> "(int " ^ Nativeint.to_string i ^ ")"
-  | Cconst_float f -> "(float " ^ f ^ ")"
-  | Cconst_symbol s -> "(symb " ^ s ^ ")"
-  | Cconst_pointer i -> "(ptr " ^ string_of_int i ^ ")"
-  | Cconst_natpointer i -> "(ptr " ^ Nativeint.to_string i ^ ")"
-  | Cvar id -> "(Cvar " ^ translate_symbol (Ident.unique_name id) ^ ")"
-  | Clet(id,arg,body) -> "(let " ^ translate_symbol (Ident.unique_name id) ^ " = " ^ cmm_to_string arg ^ " in " ^ cmm_to_string body ^ ")"
-  | Cassign(id,expr) -> "(assign " ^ translate_symbol (Ident.unique_name id) ^ " " ^ cmm_to_string expr ^ ")"
-  | Ctuple [] -> "()"
-  | Ctuple exprs -> "(some tuple...)"
-  | Cop(Capply(typ, debug), exprs) -> "(call " ^ String.concat " " (List.map cmm_to_string exprs) ^ ")"
-  | Cop(Cextcall(fn, typ, alloc, debug), exprs) -> "(extcall " ^ String.concat " " (List.map cmm_to_string exprs) ^ ")"
-  | Cop(Calloc, arg) -> "(alloc " ^ String.concat " " (List.map cmm_to_string arg) ^ ")"
-  | Cop(Cstore mem, [addr; value]) -> "(store " ^ typename (translate_mem mem) ^ " " ^ cmm_to_string value ^ " " ^ cmm_to_string addr ^ ")"
-  | Cop(Craise debug, args) -> "(raise " ^ String.concat " " (List.map cmm_to_string args) ^ ")"
-  | Cop(Ccheckbound debug, [arr; index]) -> "(checkbound " ^ cmm_to_string arr ^ " " ^ cmm_to_string index ^ ")"
-  | Cop(Ccheckbound _, _) -> error "not implemented: checkound with #args != 2"
-  | Cop((Caddi|Csubi|Cmuli|Cdivi|Cmodi|Cand|Cor|Cxor|Clsl|Clsr|Casr), [left;right]) -> "(op " ^ cmm_to_string left ^ " " ^ cmm_to_string right ^ ")"
-  | Cop((Caddf|Csubf|Cmulf|Cdivf), [left;right]) -> "(op " ^ cmm_to_string left ^ " " ^ cmm_to_string right ^ ")"
-  | Cop((Cadda|Csuba), [left;right]) -> "(op " ^ cmm_to_string left ^ " " ^ cmm_to_string right ^ ")"
-  | Cop(Ccmpi op, [left;right]) -> "(cmpi " ^ cmm_to_string left ^ " " ^ cmm_to_string right ^ ")"
-  | Cop(Ccmpf op, [left;right]) -> "(cmpf " ^ cmm_to_string left ^ " " ^ cmm_to_string right ^ ")"
-  | Cop(Ccmpa op, [left;right]) -> "(cmpa " ^ cmm_to_string left ^ " " ^ cmm_to_string right ^ ")"
-  | Cop(Cfloatofint, [arg]) -> "(floatofint " ^ cmm_to_string arg ^ ")"
-  | Cop(Cintoffloat, [arg]) -> "(intoffloat " ^ cmm_to_string arg ^ ")"
-  | Cop(Cabsf, [arg]) -> "(absf " ^ cmm_to_string arg ^ ")"
-  | Cop(Cnegf, [arg]) -> "(negf " ^ cmm_to_string arg ^ ")"
-  | Cop(Cload mem, [arg]) -> "(load " ^ typename (translate_mem mem) ^ " " ^ cmm_to_string arg ^ ")"
-  | Cop(_,_) -> error "operation not available"
-  | Csequence(fst,snd) -> "(seq " ^ cmm_to_string fst ^ " " ^ cmm_to_string snd ^ ")"
-  | Cifthenelse(cond, expr1, expr2) -> "(if " ^ cmm_to_string cond ^ " " ^ cmm_to_string expr1 ^ " " ^ cmm_to_string expr2 ^ ")"
-  | Cswitch(expr,is,exprs) -> "(switch ...)"
-  | Cloop expr -> "(loop " ^ cmm_to_string expr ^ ")"
-  | Ccatch(i,ids,expr1,expr2) -> "(catch ...)"
-  | Cexit(i,exprs) -> "(exit ...)"
-  | Ctrywith(try_expr, id, with_expr) -> "(try " ^ cmm_to_string try_expr ^ " with " ^ translate_symbol (Ident.unique_name id) ^ " " ^ cmm_to_string with_expr ^ ")"
-
 let cast value dest_typ =
   let typ = typeof value in
   match typ, dest_typ with
@@ -155,7 +114,7 @@ let cast value dest_typ =
       else error ("error while trying to cast " ^ typename typ ^
                      " to " ^ typename dest_typ ^ ": " ^
                      (match emit_llvm value with Just s -> s | Error s -> s))
-	
+
 let alloca name typ =
   Hashtbl.add vars name ();
   Hashtbl.add types name (Address typ);
@@ -188,12 +147,12 @@ let comp op typ left right =
 let getelementptr addr offset =
   Lgetelementptr(addr, offset)
 
-let load_exn_ptr () = local_load "%exn_ptr" (Address addr_type)
-let load_young_ptr () = local_load "%young_ptr" (Address addr_type)
+let load_exn_ptr () = local_load "@caml_exeption_pointer" (Address addr_type)
+let load_young_ptr () = local_load "@caml_young_ptr" (Address addr_type)
 
 let call fn args =
   let args = List.map (fun a -> cast a addr_type) args in
-  Lcall(Return3, fn, args)
+  Lcall(addr_type, fn, args)
 
 let ccall typ fn args =
   let args = List.map (fun a -> cast a addr_type) args in
@@ -201,7 +160,7 @@ let ccall typ fn args =
 
 let tailcall fn args =
   let args = List.map (fun a -> cast a addr_type) args in
-  Ltailcall(Return3, fn, args)
+  Lcall(addr_type, fn, args)
 
 let voidcall fn args =
   let args = List.map (fun a -> cast a addr_type) args in
@@ -218,7 +177,6 @@ let rec caml_type expect = function
   | Cconst_symbol _ -> addr_type
   | Cconst_pointer _ -> addr_type
   | Cconst_natpointer _ -> addr_type
-
   | Cvar id ->
       let name = Ident.unique_name id in
       if expect != Any && not (Hashtbl.mem types name) then
@@ -232,11 +190,9 @@ let rec caml_type expect = function
   | Cassign(id,expr) -> Void
   | Ctuple [] -> Void
   | Ctuple exprs -> Void (* this is probably wrong... *)
-
   | Cop(Capply(typ, debug), exprs) -> expect
   | Cop(Cextcall(fn, typ, alloc, debug), exprs) -> expect
   | Cop(Calloc, _) -> addr_type (* this is always the correct result type of an allocation *)
-
   | Cop(Cstore mem, [addr; value]) -> Void
   | Cop(Craise debug, args) -> Void
   | Cop(Ccheckbound debug, [arr; index]) -> Void
@@ -262,12 +218,9 @@ let rec caml_type expect = function
       ignore (caml_type (Address typ) arg);
       if not (is_float typ) then int_type else typ
   | Cop(_,_) -> error "operation not available"
-
-
   | Csequence(fst,snd) -> ignore (caml_type Any fst); caml_type expect snd
   | Cifthenelse(cond, expr1, expr2) -> ignore (caml_type int_type cond); let typ = caml_type Any expr1 in caml_type typ expr2
   | Cswitch(expr,is,exprs) -> expect (* TODO figure out the real type *)
-
   | Cloop expr -> ignore (caml_type Any expr); Void
   | Ccatch(i,ids,expr1,expr2) -> Void (* TODO figure out what the real type would be *)
   | Cexit(i,exprs) -> Void (* TODO process exprs *)
@@ -290,8 +243,10 @@ let rec helper in_tail_position instr =
         | _ -> add_const s
       end;
       Lconst("@" ^ translate_symbol s, typ)
-  | Cconst_pointer i -> cast (Lconst(string_of_int i, int_type)) addr_type
-  | Cconst_natpointer i -> cast (Lconst(Nativeint.to_string i, int_type)) addr_type
+  | Cconst_pointer i ->
+      cast (Lconst(string_of_int i, int_type)) addr_type
+  | Cconst_natpointer i ->
+      cast (Lconst(Nativeint.to_string i, int_type)) addr_type
 
   | Cvar id -> begin
       let name = translate_symbol (Ident.unique_name id) in
@@ -322,11 +277,11 @@ let rec helper in_tail_position instr =
       match exprs with
       | Cconst_symbol s :: args ->
           let args = compile_list args in
-          add_function (Return3, translate_symbol s, Lnothing :: Lnothing :: args);
+          add_function (addr_type, translate_symbol s, args);
           (if in_tail_position then tailcall else call) (Lvar("@" ^ translate_symbol s, Any)) args
       | clos :: res ->
           let args = compile_list res in
-          let fn_type = Address(Function(Return3, addr_type :: addr_type :: (List.map (fun x -> addr_type) args))) in
+          let fn_type = Address(Function(addr_type, List.map (fun x -> addr_type) args)) in
           let fn = cast (helper false clos) fn_type in
           if in_tail_position then tailcall fn args else call fn args
       | [] -> error "no function specified"
@@ -367,7 +322,7 @@ let rec helper in_tail_position instr =
       (* TODO replace the following by code that actually does the right thing *)
       let cond = comp "icmp ule" (typeof length) index length in
       let c = c () in
-      add_function (Void, "caml_ml_array_bound_error", [Lnothing; Lnothing]);
+      add_function (Void, "caml_ml_array_bound_error", []);
       Lcomment "checking bounds..."
       @@ Lbr_cond(cond, "out_of_bounds" ^ c, "ok" ^ c)
       @@ Llabel ("out_of_bounds" ^ c)
@@ -459,14 +414,13 @@ and compile_operation op exprs =
       match op with
       | Caddi | Csubi | Cmuli | Cdivi | Cmodi | Cand | Cor | Cxor | Clsl | Clsr | Casr ->
           binop (translate_op op) int_type left right
-      | Caddf | Csubf | Cmulf | Cdivf ->
-          binop (translate_op op) Double left right
+      | Caddf | Csubf | Cmulf | Cdivf -> binop (translate_op op) Double left right
       | Ccmpi op ->
-          cast (comp ("icmp " ^ translate_icomp op) int_type left right) int_type
+          cast (comp (translate_icomp op) int_type left right) int_type
       | Ccmpf op ->
-          cast (comp ("fcmp " ^ translate_fcomp op) Double left right) int_type
+          cast (comp (translate_fcomp op) Double left right) int_type
       | Ccmpa op ->
-          cast (comp ("icmp " ^ translate_ucomp op) int_type left right) int_type
+          cast (comp (translate_ucomp op) int_type left right) int_type
       | Cadda | Csuba ->
            cast (binop "add" int_type (cast left int_type) (cast right int_type)) addr_type
       | _ -> error "Not a binary operator"
@@ -503,7 +457,7 @@ let read_function phrase =
   | Cfunction fd_cmm ->
       let name = fd_cmm.fun_name in
       let args = List.map (fun _ -> addr_type) fd_cmm.fun_args in
-      functions := (name, addr_type :: addr_type :: args) :: !functions
+      local_functions := (name, args) :: !local_functions
   | Cdata _ -> ()
 
 let compile_fundecl fd_cmm =
@@ -512,11 +466,10 @@ let compile_fundecl fd_cmm =
   let args = fd_cmm.fun_args in
   let body = fd_cmm.fun_body in
   Hashtbl.clear types;
-  List.iter (fun (name, args) -> Hashtbl.add types (translate_symbol name) (Function(Return3, args))) !functions;
+  List.iter (fun (name, args) -> Hashtbl.add types (translate_symbol name) (Function(addr_type, args))) !local_functions;
   ignore (caml_type Any body);
-  let args = ("exn_ptr", addr_type) :: ("young_ptr", addr_type )
-             :: List.map (fun (x, typ) -> (translate_symbol (Ident.unique_name x), translate_machtype typ)) args
-  in try
+  let args = List.map (fun (x, typ) -> (translate_symbol (Ident.unique_name x), translate_machtype typ)) args
+  in (*try*)
      let store_params =
        List.map (fun (x, typ) ->
                    let typ = try Hashtbl.find types x with Not_found -> addr_type in
@@ -527,10 +480,12 @@ let compile_fundecl fd_cmm =
      let code = code @@ return (cast (compile_expr body) addr_type) in
      let argument_list = List.map (fun (id, _) -> "%.param." ^ id, addr_type) in
      ignore (emit_llvm (Ldefine(translate_symbol name, argument_list args, code)))
-  with Llvm_error s -> print_endline s;
-                       emit_constant_declarations ();
-                       emit_function_declarations ();
-                       error s
+(*  with Llvm_error s ->
+    print_endline ("error while compiling function " ^ name ^ ":");
+    print_endline s;
+    emit_constant_declarations ();
+    emit_function_declarations ();
+    error s*)
 
 let data d = Llvmemit.data d
 

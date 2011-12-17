@@ -15,14 +15,12 @@ let counter = ref 0
 let size_int = 8 * Arch.size_int
 let size_float = 8 * Arch.size_float
 
-let calling_conv = "cc 11"
+let calling_conv = "fastcc"
 
 type llvm_type =
   | Integer of int (* bitwidth *)
   | Double
   | Address of llvm_type
-  | Return3
-  | Return2
   | Void
   | Any
   | Function of llvm_type * llvm_type list (* return type, argument types *)
@@ -38,8 +36,6 @@ let rec typename = function
   | Integer i -> "i" ^ string_of_int i
   | Double -> "double"
   | Address typ -> typename typ ^ "*"
-  | Return3 -> "%res"
-  | Return2 -> "%res2"
   | Void -> "void"
   | Any -> (*error "unable to infer type"*) "any"
   | Function(ret, args) -> typename ret ^ " (" ^ String.concat ", " (List.map typename args) ^ ")"
@@ -67,7 +63,6 @@ type llvm_instr =
   | Lfptosi of llvm_instr * llvm_type * llvm_type (* value, source type, target type *)
   | Lgetelementptr of llvm_instr * llvm_instr (* address, offset *)
   | Lcall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments *)
-  | Ltailcall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments *)
   | Lccall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments; using c calling convention *)
   | Lconst of string * llvm_type (* literal, type *)
   | Llabel of string (* name *)
@@ -84,6 +79,45 @@ type llvm_instr =
   | Lunreachable
   | Lcomment of string
 
+(* Print an expression in the intermediate format using a syntax inspired by
+ * S-expressions *)
+let rec to_string = function
+  | Lvar(name, typ) -> "(local_store " ^ typename typ ^ " " ^ name ^ ")"
+  | Lbinop(op, typ, left, right) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string left ^ " " ^ to_string right ^ ")"
+  | Lcomp(op, typ, left, right) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string left ^ " " ^ to_string right ^ ")"
+  | Lunop(op, typ, arg) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string arg ^ ")"
+  | Lalloca(name, typ) -> "(alloca " ^ name ^ " " ^ typename typ ^ ")"
+  | Lload addr -> "(load " ^ to_string addr ^ ")"
+  | Lstore(value, addr) -> "(store " ^ to_string value ^ " " ^ to_string addr ^ ")"
+  | Lzext(value, from_type, to_type)     -> "(zext"     ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
+  | Ltrunc(value, from_type, to_type)    -> "(trunc"    ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
+  | Lbitcast(value, from_type, to_type)  -> "(bitcast"  ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
+  | Linttoptr(value, from_type, to_type) -> "(inttoptr" ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
+  | Lptrtoint(value, from_type, to_type) -> "(ptrtoint" ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
+  | Lsitofp(value, from_type, to_type)   -> "(sitofp"   ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
+  | Lfptosi(value, from_type, to_type)   -> "(fptosi"   ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
+  | Lgetelementptr(addr, offset) -> "(elemptr " ^ to_string addr ^ " " ^ to_string offset ^ ")"
+  | Lcall(ret, fn, args) -> "(call " ^ typename addr_type ^ " " ^ to_string fn ^ "(" ^ String.concat " " (List.map to_string args) ^ "))"
+  | Lccall(ret, fn, args) -> "(call ccc " ^ typename addr_type ^ " " ^ to_string fn ^ "(" ^ String.concat " " (List.map to_string args) ^ "))"
+  | Lconst(const, typ) -> "(const " ^ const ^ " " ^ typename typ ^ ")"
+  | Llabel name -> "(label " ^ name ^ ")"
+  | Lbr label_name -> "(br " ^ label_name ^ ")"
+  | Lbr_cond(cond, then_label, else_label) -> "(if " ^ to_string cond ^ " (br " ^ then_label ^ ") (br " ^ else_label ^ "))"
+  | Lswitch(c, value, indexes, blocks, typ) -> "(switch " ^ typename typ ^ " " ^ to_string value ^ " of " ^ to_string blocks ^ ")"
+  | Lreturn(value, typ) -> "(return " ^ typename typ ^ " " ^ to_string value ^ ")"
+  | Lseq(instr1,instr2) -> to_string instr1 ^ ";\n\t" ^ to_string instr2
+  | Lcaml_raise_exn exn -> "(raise " ^ to_string exn ^ ")"
+  | Lcaml_catch_exn foo -> "(catch " ^ foo ^ ")"
+  | Lcaml_alloc len -> "(ALLOC " ^ string_of_int len ^ ")"
+  | Ldefine(name, args, body) -> "(define " ^ name ^ " " ^ String.concat " " (List.map (fun (x,_) -> x) args) ^ " " ^ to_string body ^ ")"
+  | Lnothing -> "nothing"
+  | Lunreachable -> "unreachable"
+  | Lcomment s -> "(comment " ^ s ^ ")"
+
+let has_no_type = function
+  | Llabel _ | Ldefine(_,_,_) | Lnothing | Lunreachable | Lcomment _ | Lbr _ | Lbr_cond(_,_,_) | Lstore(_,_) -> true
+  | _ -> false
+
 let rec typeof = function
   | Lvar(_, typ) -> typ
   | Lbinop(_,typ,_,_) -> typ
@@ -91,7 +125,7 @@ let rec typeof = function
   | Lunop(_,typ,_) -> typ
   | Lalloca(_, typ) -> Address typ
   | Lload addr -> deref (typeof addr)
-  | Lstore(_,_) -> Void
+  | Lstore(_,_) -> error "store does not return anything"
   | Lzext(_,_,typ) -> typ
   | Ltrunc(_,_,typ) -> typ
   | Lbitcast(_,_,typ) -> typ
@@ -100,21 +134,20 @@ let rec typeof = function
   | Lsitofp(_,_,typ) -> typ
   | Lfptosi(_,_,typ) -> typ
   | Lgetelementptr(ptr,_) -> typeof ptr
-  | Lcall(typ,_,_) -> if typ == Return3 then addr_type else typ
-  | Ltailcall(typ,_,_) -> if typ == Return3 then addr_type else typ
+  | Lcall(typ,_,_) -> typ
   | Lccall(typ,_,_) -> typ
   | Lconst(_,typ) -> typ
   | Llabel _ -> error "Label does not have a type"
-  | Lbr _ -> Void
-  | Lbr_cond(_,_,_) -> Void
+  | Lbr _ -> error "branch does not return anything"
+  | Lbr_cond(_,_,_) -> error "conditional branch does not return anything"
   | Lswitch(_,_,_,_,typ) -> typ
   | Lreturn(_, typ) -> typ
-  | Lseq(instr,Lcomment _) -> typeof instr
+  | Lseq(instr1, instr2) when has_no_type instr2 -> typeof instr1
   | Lseq(_,instr) -> typeof instr
-  | Lcaml_raise_exn _ -> Void
-  | Lcaml_catch_exn _ -> Void
+  | Lcaml_raise_exn _ -> error "raise does not return anything"
+  | Lcaml_catch_exn _ -> error "catch not implemented, type unknown"
   | Lcaml_alloc _ -> addr_type
-  | Ldefine(_,_,_) -> Return3
+  | Ldefine(_,_,_) -> error "Function..."
   | Lnothing -> error "Lnothing does not have a type"
   | Lunreachable -> error "Lunreachable does not have a type"
   | Lcomment _ -> error "Lcomment does not have a type"
@@ -147,19 +180,65 @@ let (++) a b = match a, b with
   | Error e, _ -> Error e
   | Just _, Error e -> Error e
 
-let exn_ptr = Lload(Lvar("%exn_ptr", Address addr_type))
-let young_ptr = Lload(Lvar("%young_ptr", Address addr_type))
+let exn_ptr = Lload(Lvar("@caml_exception_pointer", Address addr_type))
+let young_ptr = Lload(Lvar("@caml_young_ptr", Address addr_type))
 
 let emit_label lbl = emit_nl (lbl ^ ":")
 let emit_instr instr = emit_nl ("\t" ^ instr)
 
-let rec emit_llvm instr =
+let rec lower instr =
   match instr with
+  | Lcaml_raise_exn exn -> Lcall(Void, Lvar("@caml_raise_exn", Any), [exn]) @@ Lunreachable
+  | Lcaml_catch_exn e -> Lnothing (* FIXME not implemented *)
+  | Lcaml_alloc len ->
+      let counter = c() in
+      let offset = string_of_int (-len) in
+      let new_young_ptr = Lload(Lvar("%new_young_ptr" ^ counter, Address addr_type)) in
+      let limit = Lload(Lvar("@caml_young_limit", Address addr_type)) in
+      let cmp_res = Lcomp("icmp ult", addr_type, new_young_ptr, limit) in
+      Lbr ("begin_alloc" ^ counter)
+      @@ Llabel("begin_alloc" ^ counter)
+      @@ Lcomment ("allocating " ^ string_of_int len ^ " bytpes")
+      @@ Lstore(Lgetelementptr(young_ptr, Lconst(offset, int_type)), Lalloca("new_young_ptr" ^ counter, addr_type))
+      @@ Lbr_cond(cmp_res, "run_gc" ^ counter, "continue" ^ counter)
+      @@ Llabel ("run_gc" ^ counter)
+      @@ Lcall(Void, Lvar("@caml_call_gc", Any), [])
+      @@ Lbr ("begin_alloc" ^ counter)
+      @@ Llabel ("continue" ^ counter)
+      @@ Lstore (new_young_ptr, Lvar("@caml_young_ptr", Address addr_type))
+  | Lbinop(op, typ, left, right) -> Lbinop(op, typ, lower left, lower right)
+  | Lcomp(op, typ, left, right) -> Lcomp(op, typ, lower left, lower right)
+  | Lunop(op, typ, arg) -> Lunop(op, typ, lower arg)
+  | Lload instr -> Lload (lower instr)
+  | Lstore(src, dest) -> Lstore(lower src, lower dest)
+  | Lzext(value, src_type, dest_type) -> Lzext(lower value, src_type, dest_type)
+  | Ltrunc(value, src_type, dest_type) -> Ltrunc(lower value, src_type, dest_type)
+  | Lbitcast(value, src_type, dest_type) -> Lbitcast(lower value, src_type, dest_type)
+  | Linttoptr(value, src_type, dest_type) -> Linttoptr(lower value, src_type, dest_type)
+  | Lptrtoint(value, src_type, dest_type) -> Lptrtoint(lower value, src_type, dest_type)
+  | Lsitofp(value, src_type, dest_type) -> Lsitofp(lower value, src_type, dest_type)
+  | Lfptosi(value, src_type, dest_type) -> Lfptosi(lower value, src_type, dest_type)
+  | Lgetelementptr(address, offset) -> Lgetelementptr(lower address, lower offset)
+  | Lcall(ret_type, fn, args) -> Lcall(ret_type, lower fn, List.map lower args)
+  | Lccall(ret_type, fn, args) -> Lccall(ret_type, lower fn, List.map lower args)
+  | Lbr_cond(cond, lbl_true, lbl_false) -> Lbr_cond(lower cond, lbl_true, lbl_false)
+  | Lswitch(name, value, indexes, blocks, typ) ->
+      Lswitch(name, lower value, indexes, (*List.map*) lower blocks, typ)
+  | Lreturn(value, typ) -> Lreturn(lower value, typ)
+  | Lseq(instr1, instr2) -> Lseq(lower instr1, lower instr2)
+  | Ldefine(name, args, body) -> Ldefine(name, args, lower body)
+  | Lvar(_,_) | Lalloca(_,_) | Lconst(_,_) | Lbr _ | Lnothing | Lunreachable | Lcomment _ | Llabel _ -> instr
+
+
+let rec emit_llvm instr =
+  match lower instr with
   | Lvar(name, typ) -> Just name
   | Lbinop(op, typ, left, right) -> emit_binop op (typename typ) left right
   | Lcomp(op, typ, left, right) -> emit_binop op (typename typ) left right
   | Lunop(op, typ, arg) -> emit_unop op (typename typ) arg
-  | Lalloca(name, typ) -> emit_instr ("%" ^ name ^ " = alloca " ^ typename typ); Just ("%" ^ name)
+  | Lalloca(name, typ) ->
+      emit_instr ("%" ^ name ^ " = alloca " ^ typename typ);
+      Just ("%" ^ name)
   | Lload addr -> emit_unop "load" (typename (typeof addr)) addr
   | Lstore(value, addr) ->
       let fn (v,a) =
@@ -183,109 +262,15 @@ let rec emit_llvm instr =
         name
       in
       emit_llvm addr ++ emit_llvm offset >>= just fn
-  | Lcall(ret, fn, args) ->
-      let args =
-        let fn x =
-          match emit_llvm x with
-          | Just s -> typename addr_type ^ " " ^ s
-          | Error s -> error ("failed to emit code for arguments of caml call:\n" ^ s)
-        in
-        List.map fn args
-      in
-      let exn_ptr = emit_llvm (Lload(Lvar("%exn_ptr", Address addr_type))) in
-      let young_ptr = emit_llvm (Lload(Lvar("%young_ptr", Address addr_type))) in
-      let args = String.concat ", "
-        begin
-          match exn_ptr, young_ptr with
-          | Just e, Just y -> (typename addr_type ^ " " ^ e) :: (typename addr_type ^ " " ^ y) :: args
-          | _, _ -> error ("failed to emit code for exn or young pointer")
-        end
-      in
-      let f fn =
-        if ret == Void then begin (* TODO even void functions should return caml_young_ptr and caml_exn_ptr *)
-          let result = "%result" ^ c() in
-          emit_instr (result ^ " = call " ^ calling_conv ^ " %res2 " ^ fn ^ "(" ^ args ^ ")");
-          let exn_ptr = extractvalue ("%new_exn_ptr" ^ c()) Return2 result (Lconst("0", int_type)) in
-          let young_ptr = extractvalue ("%new_young_ptr" ^ c()) Return2 result (Lconst("1", int_type)) in
-          let fn (exn_ptr, young_ptr) =
-            emit_instr ("store " ^ typename addr_type ^ " " ^ exn_ptr ^ ", " ^ typename (Address addr_type) ^ "%exn_ptr");
-            emit_instr ("store " ^ typename addr_type ^ " " ^ young_ptr ^ ", " ^ typename (Address addr_type) ^ "%young_ptr");
-            Error "void function does not return anything"
-          in
-          exn_ptr ++ young_ptr >>= fn
-        end else begin
-          let result = "%result" ^ c() in
-          emit_instr (result ^ " = call " ^ calling_conv ^ " " ^ typename ret ^ " " ^ fn ^ "(" ^ args ^ ")");
-          let exn_ptr = extractvalue ("%new_exn_ptr" ^ c()) ret result (Lconst("0", int_type)) in
-          let young_ptr = extractvalue ("%new_young_ptr" ^ c()) ret result (Lconst("1", int_type)) in
-          let call_res = extractvalue ("%call_res" ^ c()) ret result (Lconst("2", int_type)) in
-          let fn ((exn_ptr, young_ptr), call_res) =
-            emit_instr ("store " ^ typename addr_type ^ " " ^ exn_ptr ^ ", " ^ typename (Address addr_type) ^ "%exn_ptr");
-            emit_instr ("store " ^ typename addr_type ^ " " ^ young_ptr ^ ", " ^ typename (Address addr_type) ^ "%young_ptr");
-            Just call_res
-          in
-          exn_ptr ++ young_ptr ++ call_res >>= fn
-        end
-      in
-      emit_llvm fn >>= f
-  | Ltailcall(ret, fn, args) ->
-      let args =
-        let fn x =
-          match emit_llvm x with
-          | Just s -> typename addr_type ^ " " ^ s
-          | Error s -> error ("failed to emit code for arguments of caml call:\n" ^ s)
-        in
-        List.map fn args
-      in
-      let args = String.concat ", "
-        begin
-          match emit_llvm exn_ptr, emit_llvm young_ptr with
-          | Just e, Just y -> (typename addr_type ^ " " ^ e) :: (typename addr_type ^ " " ^ y) :: args
-          | _, _ -> error ("failed to emit code for exn or young pointer")
-        end
-      in
-      let f fn =
-        print_endline "calling function...";
-        if ret == Void then begin (* TODO even void functions should return caml_young_ptr and caml_exn_ptr *)
-          emit_instr ("call " ^ calling_conv ^ " void " ^ fn ^ "(" ^ args ^ ")");
-          emit_instr "ret void";
-          Error "void function does not return anything"
-        end else begin
-          let c = c() in
-          let result = "%result" ^ c in
-          emit_instr (result ^ " = call " ^ calling_conv ^ " " ^ typename ret ^ " " ^ fn ^ "(" ^ args ^ ")");
-          emit_instr ("ret " ^ typename Return3 ^ " " ^ result);
-          Error "Tail call does not return anything for local usage"
-        end
-      in
-      emit_llvm fn >>= f
-  | Lccall(ret, fn, args) ->
-      let args =
-        let fn x =
-          match emit_llvm x with
-          | Just s -> typename (typeof x) ^ " " ^ s
-          | Error s -> error ("failed to emit code for arguments of c call:\n" ^ s)
-        in
-        String.concat ", " (List.map fn args)
-      in
-      (* TODO store caml_young_ptr and caml_exn_ptr in the global variables *)
-      (* TODO load caml_young_ptr and caml_exn_ptr into their registers *)
-      let f fn =
-        if ret == Void then begin
-          emit_instr ("call ccc void " ^ fn ^ "(" ^ args ^ ")");
-          Error "void c function does not return anything"
-        end else begin
-          let res = "%result" ^ c() in
-          emit_instr (res ^ " = call ccc " ^ typename ret ^ " " ^ fn ^ "(" ^ args ^ ")");
-          Just res
-        end
-      in
-      emit_llvm fn >>= f
+  | Lcall(ret, fn, args) -> call calling_conv ret fn args
+  | Lccall(ret, fn, args) -> call "ccc" ret fn args
   | Lconst(const, _) -> Just const
   | Llabel name ->
       emit_label name;
       Error "label does not return anything"
-  | Lbr label_name -> emit_instr ("br label %" ^ label_name); Error "br does not return anything"
+  | Lbr label_name ->
+      emit_instr ("br label %" ^ label_name);
+      Error "br does not return anything"
   | Lbr_cond(cond, then_label, else_label) ->
       let typ = typename (typeof cond) in
       let fn cond =
@@ -307,50 +292,17 @@ let rec emit_llvm instr =
   | Lreturn(value, typ) -> emit_return value;
   | Lseq(instr1,Lcomment s) -> let res = emit_llvm instr1 in ignore (emit_llvm (Lcomment s)); res
   | Lseq(instr1,instr2) -> ignore (emit_llvm instr1); emit_llvm instr2
-
-  | Lcaml_raise_exn exn ->
-      let fn ((exn_ptr,young_ptr),exn) =
-        let typ = typename addr_type in
-        emit_instr ("call " ^ calling_conv ^ " void @caml_raise_exn(" ^ typ ^ " " ^ exn_ptr ^
-                 ", " ^ typ ^ " " ^ young_ptr ^ ", " ^ typ ^ " " ^ exn ^ ") noreturn");
-        emit_instr "unreachable";
-        Error "raise does not return anything"
-      in
-      emit_llvm exn_ptr ++ emit_llvm young_ptr ++ emit_llvm exn >>= fn
-  | Lcaml_catch_exn foo -> Just "CATCH"
-  | Lcaml_alloc len ->
-      let counter = c () in
-      let new_young_ptr_instr =
-        let offset = string_of_int (- len) in
-        Lstore(Lgetelementptr(young_ptr, Lconst(offset, int_type)), Lalloca("new_young_ptr" ^ counter, addr_type))
-      in
-      let new_young_ptr = Lload(Lvar("%new_young_ptr" ^ counter, Address addr_type)) in
-      let limit = Lload(Lvar("@caml_young_limit", Address addr_type)) in
-      let cmp_res = Lcomp("icmp ult", addr_type, new_young_ptr, limit) in
-      let result =
-        Lbr ("begin_alloc" ^ counter)
-        @@ Llabel ("begin_alloc" ^ counter)
-        @@ Lcomment ("allocating " ^ string_of_int len ^ " bytes")
-        @@ new_young_ptr_instr
-        @@ Lbr_cond(cmp_res, "run_gc" ^ counter, "continue" ^ counter)
-        @@ Llabel ("run_gc" ^ counter)
-        @@ Lcall(Void, Lvar("@caml_call_gc", Any), [])
-        @@ Lbr ("begin_alloc" ^ counter)
-        @@ Llabel ("continue" ^ counter)
-        @@ Lstore(new_young_ptr, Lvar("%young_ptr", Address addr_type)) in
-      ignore (emit_llvm result);
-      emit_llvm young_ptr
-
   | Ldefine(name, args, body) ->
       counter := 0;
       let args = String.concat ", " (List.map (fun (name, typ) -> typename typ ^ " " ^ name) args) in
-      emit_nl ("define " ^ calling_conv ^ " %res @" ^ name ^ "(" ^ args ^ ") nounwind gc \"ocaml\" {");
+      emit_nl ("define " ^ calling_conv ^ " " ^ typename addr_type ^ " @" ^ name ^ "(" ^ args ^ ") gc \"ocaml\" {");
       ignore (emit_llvm body);
       emit_nl "}\n";
       Error "define does not return anything"
   | Lnothing -> Error "nothing"
   | Lunreachable -> emit_instr "unreachable"; Error "unreachable does not return anything"
   | Lcomment s -> emit_instr ("; " ^ s); Error "comment does not return anything"
+  | Lcaml_raise_exn _ | Lcaml_catch_exn _ | Lcaml_alloc _ -> error ("lowering instruction failed: " ^ to_string (lower instr));
 
 and emit_binop op typ left right =
   let fn (left,right) =
@@ -378,24 +330,33 @@ and cast value op from_type to_type =
 
 and emit_return value =
   let typ = typename (typeof value) in
-  let fn ((value, exn_ptr), young_ptr) =
-    emit_instr ("%mrv.0 = insertvalue %res undef, " ^ typ ^ " " ^ exn_ptr ^ ", 0");
-    emit_instr ("%mrv.1 = insertvalue %res %mrv.0, " ^ typ ^ " " ^ young_ptr ^ ", 1");
-    emit_instr ("%mrv.2 = insertvalue %res %mrv.1, " ^ typ ^ " " ^ value ^ ", 2");
-    emit_instr ("ret %res  %mrv.2");
+  let fn value =
+    emit_instr ("ret " ^ typ ^ " " ^ value);
     Error "return statement does not write into any SSA register"
   in
-  let value = emit_llvm value in
-  let exn_ptr = emit_llvm exn_ptr in
-  let young_ptr = emit_llvm young_ptr in
-  value ++ exn_ptr ++ young_ptr >>= fn
+  emit_llvm value >>= fn
 
-and extractvalue res typ record index =
-  let fn index =
-    emit_instr (res ^ " = extractvalue " ^ typename typ ^ " " ^ record ^ ", " ^ index);
-    Just res
+and call cc ret fn args =
+  let args =
+    let fn x =
+      match emit_llvm x with
+      | Just s -> typename (typeof x) ^ " " ^ s
+      | Error s -> error ("failed to emit code for arguments of call:\n" ^ s)
+    in
+    String.concat ", " (List.map fn args)
   in
-  emit_llvm index >>= fn
+  let f fn =
+    if ret == Void then begin
+      emit_instr ("call " ^ cc ^ " " ^ typename ret ^ " " ^ fn ^ "(" ^ args ^ ")");
+      Error "void function does not return anything";
+    end else begin
+      let result = "%result" ^ c() in
+      emit_instr (result ^ " = call " ^ cc ^ " " ^ typename ret ^ " " ^ fn ^ "(" ^ args ^ ")");
+      Just result
+    end
+  in
+  emit_llvm fn >>= f
+
 
 (*
  * Header with declarations of some functions and constants needed in every
@@ -403,11 +364,9 @@ and extractvalue res typ record index =
  *)
 let header =
   [ "; vim: set ft=llvm:"
-  ; "%res = type " ^ ret_type
-  ; "%res2 = type {" ^ typename addr_type ^ ", " ^ typename addr_type ^ "}"
   ; "declare double @fabs(double)"
-  ; "declare void @caml_raise_exn(i64*, i64*, i64*) noreturn"
-  ; "declare %res2 @caml_call_gc(i64*, i64*)"
+  ; "declare void @caml_raise_exn(i64*) noreturn"
+  ; "declare " ^ calling_conv ^ " void @caml_call_gc()"
   ; "@caml_exception_pointer = external global i64*"
   ; "@caml_young_ptr = external global i64*"
   ; "@caml_young_limit = external global i64*"
@@ -418,6 +377,8 @@ let header =
 let constants : string list ref = ref []
 
 let functions : (string * string * string list) list ref = ref []
+
+let local_functions = ref []
 
 let module_asm () = emit_string "module asm \""
 
@@ -432,48 +393,14 @@ let add_function (ret, str, args) =
   else functions := (typename ret, str, List.map (fun _ -> "i" ^ string_of_int size_int ^ "*") args) :: !functions
 
 let emit_function_declarations () =
-  List.iter (fun (ret_type, name, args) -> emit_nl ("declare " ^ calling_conv ^ " " ^ ret_type ^ " @" ^ name ^
-                                     "(" ^ String.concat "," args ^ ")")) !functions
+  let fn (ret_type, name, args) =
+    emit_nl ("declare " ^ calling_conv ^ " " ^ ret_type ^ " @" ^ name ^
+             "(" ^ String.concat "," args ^ ") gc \"ocaml\"")
+  in
+  List.iter fn (List.filter (fun (_,name,_) -> not (List.mem name (List.map fst !local_functions))) !functions)
 
 let emit_constant_declarations () =
   List.iter (fun name -> emit_nl ("@" ^ name ^ " = external global " ^ typename int_type)) !constants
-
-(* Print an expression in the intermediate format using a syntax inspired by
- * S-expressions *)
-let rec to_string = function
-  | Lvar(name, typ) -> "(local_store " ^ typename typ ^ " " ^ name ^ ")"
-  | Lbinop(op, typ, left, right) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string left ^ " " ^ to_string right ^ ")"
-  | Lcomp(op, typ, left, right) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string left ^ " " ^ to_string right ^ ")"
-  | Lunop(op, typ, arg) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string arg ^ ")"
-  | Lalloca(name, typ) -> "(alloca " ^ name ^ " " ^ typename typ ^ ")"
-  | Lload addr -> "(load " ^ to_string addr ^ ")"
-  | Lstore(value, addr) -> "(store " ^ to_string value ^ " " ^ to_string addr ^ ")"
-  | Lzext(value, from_type, to_type)     -> "(zext"     ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
-  | Ltrunc(value, from_type, to_type)    -> "(trunc"    ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
-  | Lbitcast(value, from_type, to_type)  -> "(bitcast"  ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
-  | Linttoptr(value, from_type, to_type) -> "(inttoptr" ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
-  | Lptrtoint(value, from_type, to_type) -> "(ptrtoint" ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
-  | Lsitofp(value, from_type, to_type)   -> "(sitofp"   ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
-  | Lfptosi(value, from_type, to_type)   -> "(fptosi"   ^ to_string value ^ " " ^ typename from_type ^ " " ^ typename to_type ^ ")"
-  | Lgetelementptr(addr, offset) -> "(elemptr " ^ to_string addr ^ " " ^ to_string offset ^ ")"
-  | Lcall(ret, fn, args) -> "(call " ^ typename ret ^ " " ^ to_string fn ^ "(" ^ String.concat " " (List.map to_string args) ^ "))"
-  | Ltailcall(ret, fn, args) -> "(tailcall " ^ typename ret ^ " " ^ to_string fn ^ "(" ^ String.concat " " (List.map to_string args) ^ "))"
-  | Lccall(ret, fn, args) -> "(call ccc " ^ typename ret ^ " " ^ to_string fn ^ "(" ^ String.concat " " (List.map to_string args) ^ "))"
-  | Lconst(const, typ) -> "(const " ^ const ^ " " ^ typename typ ^ ")"
-  | Llabel name -> "(label " ^ name ^ ")"
-  | Lbr label_name -> "(br " ^ label_name ^ ")"
-  | Lbr_cond(cond, then_label, else_label) -> "(if " ^ to_string cond ^ " (br " ^ then_label ^ ") (br " ^ else_label ^ "))"
-  | Lswitch(c, value, indexes, blocks, typ) -> "(switch " ^ typename typ ^ " " ^ to_string value ^ " of " ^ to_string blocks ^ ")"
-  | Lreturn(value, typ) -> "(return " ^ typename typ ^ " " ^ to_string value ^ ")"
-  | Lseq(instr1,instr2) -> to_string instr1 ^ ";\n\t" ^ to_string instr2
-  | Lcaml_raise_exn exn -> "(raise " ^ to_string exn ^ ")"
-  | Lcaml_catch_exn foo -> "(catch " ^ foo ^ ")"
-  | Lcaml_alloc len -> "(ALLOC " ^ string_of_int len ^ ")"
-  | Ldefine(name, args, body) -> "(define " ^ name ^ " " ^ String.concat " " (List.map (fun (x,_) -> x) args) ^ " " ^ to_string body ^ ")"
-  | Lnothing -> "nothing"
-  | Lunreachable -> "unreachable"
-  | Lcomment s -> "(comment " ^ s ^ ")"
-
 
 
 (* Emission of data *)
@@ -570,7 +497,8 @@ let begin_assembly() = List.iter emit_nl header
 
 let end_assembly() =
   emit_function_declarations ();
-  emit_constant_declarations ()
+  emit_constant_declarations ();
+  local_functions := []
 
 
 let run_assembler asm infile outfile =

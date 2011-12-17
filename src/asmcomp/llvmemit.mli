@@ -8,8 +8,6 @@ type llvm_type =
   | Integer of int (* bitwidth *)
   | Double
   | Address of llvm_type
-  | Return3
-  | Return2
   | Void
   | Any
   | Function of llvm_type * llvm_type list (* return type, argument types *)
@@ -42,7 +40,6 @@ type llvm_instr =
   | Lfptosi of llvm_instr * llvm_type * llvm_type (* value, source type, target type *)
   | Lgetelementptr of llvm_instr * llvm_instr (* address, offset *)
   | Lcall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments *)
-  | Ltailcall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments *)
   | Lccall of llvm_type * llvm_instr * llvm_instr list (* return type, name, arguments; using c calling convention *)
   | Lconst of string * llvm_type (* literal, type *)
   | Llabel of string (* name *)
@@ -67,6 +64,7 @@ val llvm_instrs : llvm_instr list ref
 
 val constants : string list ref
 val functions : (string * string * string list) list ref
+val local_functions : (string * llvm_type list) list ref
 
 val add_const : string -> unit
 val add_function : (llvm_type * string * (llvm_instr list)) -> unit

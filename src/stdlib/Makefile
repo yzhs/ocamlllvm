@@ -42,7 +42,8 @@ installopt-prof:
 stdlib.p.cmxa: $(OBJS:.cmo=.p.cmx)
 	$(CAMLOPT) -a -o stdlib.p.cmxa $(OBJS:.cmo=.p.cmx)
 
-camlheader camlheader_ur: header.c ../config/Makefile
+#../config/Makefile
+camlheader camlheader_ur: header.c
 	if $(SHARPBANGSCRIPTS); then \
 	  echo '#!$(BINDIR)/ocamlrun' > camlheader && \
 	  echo '#!' | tr -d '\012' > camlheader_ur; \

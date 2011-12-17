@@ -13,15 +13,15 @@
 
 # $Id$
 
-include ../config/Makefile
-RUNTIME=../boot/ocamlrun
-COMPILER=../ocamlc
+#include ../config/Makefile
+#RUNTIME=ocamlrun
+COMPILER=ocamlc
 CAMLC=$(RUNTIME) $(COMPILER)
 COMPFLAGS=-strict-sequence -g -warn-error A -nostdlib
-OPTCOMPILER=../ocamlopt
+OPTCOMPILER=ocamlopt
 CAMLOPT=$(RUNTIME) $(OPTCOMPILER)
 OPTCOMPFLAGS=-warn-error A -nostdlib -g
-CAMLDEP=../boot/ocamlrun ../tools/ocamldep
+CAMLDEP=ocamldep
 
 OBJS=pervasives.cmo $(OTHERS)
 OTHERS=array.cmo list.cmo char.cmo string.cmo sys.cmo \
@@ -73,10 +73,10 @@ clean::
 	$(CAMLOPT) $(OPTCOMPFLAGS) `./Compflags $@` -p -c -o $*.p.cmx $<
 
 # Dependencies on the compiler
-$(OBJS) std_exit.cmo: $(COMPILER)
-$(OBJS:.cmo=.cmi) std_exit.cmi: $(COMPILER)
-$(OBJS:.cmo=.cmx) std_exit.cmx: $(OPTCOMPILER)
-$(OBJS:.cmo=.p.cmx) std_exit.p.cmx: $(OPTCOMPILER)
+#$(OBJS) std_exit.cmo: $(COMPILER)
+#$(OBJS:.cmo=.cmi) std_exit.cmi: $(COMPILER)
+#$(OBJS:.cmo=.cmx) std_exit.cmx: $(OPTCOMPILER)
+#$(OBJS:.cmo=.p.cmx) std_exit.p.cmx: $(OPTCOMPILER)
 
 # Dependencies on Pervasives (not tracked by ocamldep)
 $(OBJS) std_exit.cmo: pervasives.cmi
