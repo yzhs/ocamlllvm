@@ -79,3 +79,5 @@ val to_string : llvm_instr -> string
 val data : Cmm.data_item list -> unit
 
 val assemble_file : string -> string -> string -> string -> int
+
+val print_debug : string -> unit

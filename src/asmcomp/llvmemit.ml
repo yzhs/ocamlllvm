@@ -114,9 +114,15 @@ let rec to_string = function
   | Lunreachable -> "unreachable"
   | Lcomment s -> "(comment " ^ s ^ ")"
 
-let has_no_type = function
-  | Llabel _ | Ldefine(_,_,_) | Lnothing | Lunreachable | Lcomment _ | Lbr _ | Lbr_cond(_,_,_) | Lstore(_,_) -> true
-  | _ -> false
+let rec has_type = function
+  | Llabel _ | Ldefine(_,_,_) | Lunreachable | Lcomment _ | Lbr _ | Lbr_cond(_,_,_)
+  | Lstore(_,_) | Lcaml_raise_exn _ -> false
+  | Lseq(instr1, instr2) -> has_type instr2 || has_type instr1
+  | _ -> true
+
+let debug = ref true
+
+let print_debug str = if !debug then print_endline str
 
 let rec typeof = function
   | Lvar(_, typ) -> typ
@@ -125,7 +131,7 @@ let rec typeof = function
   | Lunop(_,typ,_) -> typ
   | Lalloca(_, typ) -> Address typ
   | Lload addr -> deref (typeof addr)
-  | Lstore(_,_) -> error "store does not return anything"
+  | Lstore(_,_) -> Void
   | Lzext(_,_,typ) -> typ
   | Ltrunc(_,_,typ) -> typ
   | Lbitcast(_,_,typ) -> typ
@@ -142,13 +148,13 @@ let rec typeof = function
   | Lbr_cond(_,_,_) -> error "conditional branch does not return anything"
   | Lswitch(_,_,_,_,typ) -> typ
   | Lreturn(_, typ) -> typ
-  | Lseq(instr1, instr2) when has_no_type instr2 -> typeof instr1
-  | Lseq(_,instr) -> typeof instr
-  | Lcaml_raise_exn _ -> error "raise does not return anything"
+  | Lseq(_, instr) when has_type instr -> typeof instr
+  | Lseq(instr,_) -> typeof instr
+  | Lcaml_raise_exn _ -> Void
   | Lcaml_catch_exn _ -> error "catch not implemented, type unknown"
   | Lcaml_alloc _ -> addr_type
   | Ldefine(_,_,_) -> error "Function..."
-  | Lnothing -> error "Lnothing does not have a type"
+  | Lnothing -> Void
   | Lunreachable -> error "Lunreachable does not have a type"
   | Lcomment _ -> error "Lcomment does not have a type"
 
@@ -188,7 +194,7 @@ let emit_instr instr = emit_nl ("\t" ^ instr)
 
 let rec lower instr =
   match instr with
-  | Lcaml_raise_exn exn -> Lcall(Void, Lvar("@caml_raise_exn", Any), [exn]) @@ Lunreachable
+  | Lcaml_raise_exn exn -> Lcall(Void, Lvar("@caml_raise_exn", Function(Void, [addr_type])), [exn]) @@ Lunreachable
   | Lcaml_catch_exn e -> Lnothing (* FIXME not implemented *)
   | Lcaml_alloc len ->
       let counter = c() in
@@ -203,7 +209,7 @@ let rec lower instr =
       @@ Lbr_cond(cmp_res, "run_gc" ^ counter, "continue" ^ counter)
       @@ Llabel ("run_gc" ^ counter)
       @@ Lcall(Void, Lvar("@caml_call_gc", Any), [])
-      @@ Lbr ("begin_alloc" ^ counter)
+      @@ Lbr ("continue" ^ counter)
       @@ Llabel ("continue" ^ counter)
       @@ Lstore (new_young_ptr, Lvar("@caml_young_ptr", Address addr_type))
   | Lbinop(op, typ, left, right) -> Lbinop(op, typ, lower left, lower right)
@@ -289,7 +295,9 @@ let rec emit_llvm instr =
       in
       ignore (emit_llvm value >>= just fn);
       emit_llvm blocks
-  | Lreturn(value, typ) -> emit_return value;
+  | Lreturn(value, Void) -> emit_instr "ret void"; Error "return statement does not write into any SSA registers"
+  | Lreturn(value, _) -> emit_return value;
+  | Lseq(instr1,Lnothing) -> emit_llvm instr1
   | Lseq(instr1,Lcomment s) -> let res = emit_llvm instr1 in ignore (emit_llvm (Lcomment s)); res
   | Lseq(instr1,instr2) -> ignore (emit_llvm instr1); emit_llvm instr2
   | Ldefine(name, args, body) ->
@@ -395,7 +403,7 @@ let add_function (ret, str, args) =
 let emit_function_declarations () =
   let fn (ret_type, name, args) =
     emit_nl ("declare " ^ calling_conv ^ " " ^ ret_type ^ " @" ^ name ^
-             "(" ^ String.concat "," args ^ ") gc \"ocaml\"")
+             "(" ^ String.concat "," args ^ ")")
   in
   List.iter fn (List.filter (fun (_,name,_) -> not (List.mem name (List.map fst !local_functions))) !functions)
 

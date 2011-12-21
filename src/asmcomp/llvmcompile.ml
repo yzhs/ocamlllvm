@@ -120,53 +120,45 @@ let alloca name typ =
   Hashtbl.add types name (Address typ);
   Lalloca(name, typ)
 
-let load addr =
-  let typ = if is_addr (typeof addr) then typeof addr else Address (typeof addr) in
-  Lload (cast addr typ)
+let load addr = Lload addr
 
 let local_load addr typ =
   Lload(Lvar(addr, typ))
 
 let store value addr =
+  assert (typeof value <> Void);
+  assert (is_addr (typeof addr));
   Lstore(cast value (deref (typeof addr)), addr)
 
 let store_non_void arg addr =
-  if typeof arg == Void then arg else store arg addr
+  if (try typeof arg with Llvm_error _ -> Void) == Void then arg else store arg addr
 
-let load_if_necessary typ value =
-  (*Printf.printf "loading value %s if necessary\n" (to_string value);*)
-  if typ == typeof value then value
-  else if typ == Address (typeof value) then load value
-  else cast value typ
+let binop op typ left right = Lbinop(op, typ, cast left typ, cast right typ)
 
-let binop op typ left right = Lbinop(op, typ, load_if_necessary typ left, load_if_necessary typ right)
+let comp op typ left right = Lcomp(op, typ, cast left typ, cast right typ)
 
-let comp op typ left right =
-  Lcomp(op, typ, load_if_necessary typ left, load_if_necessary typ right)
-
-let getelementptr addr offset =
-  Lgetelementptr(addr, offset)
+let getelementptr addr offset = Lgetelementptr(addr, offset)
 
 let load_exn_ptr () = local_load "@caml_exeption_pointer" (Address addr_type)
 let load_young_ptr () = local_load "@caml_young_ptr" (Address addr_type)
 
 let call fn args =
-  let args = List.map (fun a -> cast a addr_type) args in
+  let args = List.map (fun a -> assert (typeof a <> Void); cast a addr_type) args in
   Lcall(addr_type, fn, args)
 
 let ccall typ fn args =
-  let args = List.map (fun a -> cast a addr_type) args in
+  let args = List.map (fun a -> assert (typeof a <> Void); cast a addr_type) args in
   Lccall(typ, fn, args)
 
 let tailcall fn args =
-  let args = List.map (fun a -> cast a addr_type) args in
+  let args = List.map (fun a -> assert (typeof a <> Void); cast a addr_type) args in
   Lcall(addr_type, fn, args)
 
 let voidcall fn args =
-  let args = List.map (fun a -> cast a addr_type) args in
+  let args = List.map (fun a -> assert (typeof a <> Void); cast a addr_type) args in
   Lcall(Void, fn, args)
 
-let return value = Lreturn(value, addr_type)
+let return value = Lreturn(value, typeof value)
 (* }}} *)
 
 (* {{{ *)
@@ -278,18 +270,20 @@ let rec helper in_tail_position instr =
       | Cconst_symbol s :: args ->
           let args = compile_list args in
           add_function (addr_type, translate_symbol s, args);
-          (if in_tail_position then tailcall else call) (Lvar("@" ^ translate_symbol s, Any)) args
+          (if in_tail_position then tailcall else call) (Lvar("@" ^ translate_symbol s, addr_type)) args
       | clos :: res ->
           let args = compile_list res in
           let fn_type = Address(Function(addr_type, List.map (fun x -> addr_type) args)) in
-          let fn = cast (helper false clos) fn_type in
+          let tmp = helper false clos in
+          assert (typeof tmp <> Void);
+          let fn = cast tmp fn_type in
           if in_tail_position then tailcall fn args else call fn args
       | [] -> error "no function specified"
     end
   | Cop(Cextcall(fn, typ, alloc, debug), exprs) ->
       let args = compile_list exprs in
       add_function (addr_type, fn, args);
-      ccall addr_type (Lvar("@" ^ fn, Any)) args
+      ccall addr_type (Lvar("@" ^ fn, addr_type)) args
   | Cop(Calloc, args) ->
       let new_young_ptr_instr = Lcaml_alloc (List.length args) in (* TODO figure out how much space a single element needs *)
       let new_young_ptr = load_young_ptr () in 
@@ -309,14 +303,22 @@ let rec helper in_tail_position instr =
       let addr = helper false addr in
       let value = helper false value in
       if typeof value == Address (translate_mem mem)
-      then store value (cast addr (typeof value))
-      else store (cast value (translate_mem mem)) addr
+      then begin
+        assert (typeof addr <> Void);
+        store value (cast addr (typeof value))
+      end else begin
+        assert (typeof value <> Void);
+        store (cast value (translate_mem mem)) (cast addr (Address (translate_mem mem)))
+      end
   | Cop(Craise debug, [arg]) ->
-      Lcaml_raise_exn (cast (helper false arg) addr_type)
+      let tmp = helper false arg in
+      assert (typeof tmp <> Void);
+      Lcaml_raise_exn (cast tmp addr_type)
   | Cop(Craise _, _) -> error "wrong number of arguments for Craise"
   | Cop(Ccheckbound debug, [arr; index]) ->
       let arr = helper false arr in
       let index = helper false index in
+      assert (typeof arr <> Void);
       let header = getelementptr (cast arr addr_type) (Lconst("-" ^ string_of_int Arch.size_addr, int_type)) in
       let length = load header in
       (* TODO replace the following by code that actually does the right thing *)
@@ -367,7 +369,7 @@ let rec helper in_tail_position instr =
       let blocks =
         List.fold_left (@@) (Lcomment "blocks") blocks
         @@ Llabel ("default" ^ c)
-        @@ Lcaml_raise_exn (Lvar("@caml_exn_Match_failure", Any))
+        @@ Lcaml_raise_exn (Lvar("@caml_exn_Match_failure", addr_type))
         @@ Llabel ("end" ^ c)
         @@ Lload(Lvar("%switch_res" ^ c, Address typ))
       in Lswitch(c, value, indexes, blocks, typ)
@@ -414,7 +416,8 @@ and compile_operation op exprs =
       match op with
       | Caddi | Csubi | Cmuli | Cdivi | Cmodi | Cand | Cor | Cxor | Clsl | Clsr | Casr ->
           binop (translate_op op) int_type left right
-      | Caddf | Csubf | Cmulf | Cdivf -> binop (translate_op op) Double left right
+      | Caddf | Csubf | Cmulf | Cdivf ->
+          binop (translate_op op) Double left right
       | Ccmpi op ->
           cast (comp (translate_icomp op) int_type left right) int_type
       | Ccmpf op ->
@@ -434,16 +437,19 @@ and compile_operation op exprs =
       | Cabsf -> Lccall(Double, Lvar("@fabs", Any), [res])
       | Cnegf -> binop "fsub" Double (Lconst("0.0", Double)) res
       | Cload mem ->
+          assert (typeof res <> Void);
           let res = load (cast res (Address (translate_mem mem))) in
           if not (is_float (typeof res))
-          then cast res int_type
-          else res (* TODO this has to be changed to reflect the actual type *)
+          then begin
+            assert (typeof res <> Void);
+            cast res int_type
+          end else res (* TODO this has to be changed to reflect the actual type *)
       | _ -> error "wrong op"
     end
   | _ -> error "There is no operator with this number of arguments"
 
 and compile_list exprs =
-  List.map (fun x -> cast (helper false x) addr_type) exprs
+  List.map (fun x -> let tmp = helper false x in assert (typeof tmp <> Void); cast tmp addr_type) exprs
 
 (* returns a tuple of
  -- instructions to execute before using the result of this operation
@@ -457,7 +463,7 @@ let read_function phrase =
   | Cfunction fd_cmm ->
       let name = fd_cmm.fun_name in
       let args = List.map (fun _ -> addr_type) fd_cmm.fun_args in
-      local_functions := (name, args) :: !local_functions
+      local_functions := (translate_symbol name, args) :: !local_functions
   | Cdata _ -> ()
 
 let compile_fundecl fd_cmm =
@@ -465,6 +471,7 @@ let compile_fundecl fd_cmm =
   let name = fd_cmm.fun_name in
   let args = fd_cmm.fun_args in
   let body = fd_cmm.fun_body in
+  print_endline ("compiling " ^ name);
   Hashtbl.clear types;
   List.iter (fun (name, args) -> Hashtbl.add types (translate_symbol name) (Function(addr_type, args))) !local_functions;
   ignore (caml_type Any body);
@@ -477,7 +484,8 @@ let compile_fundecl fd_cmm =
                    then store (cast (Lvar("%.param." ^ x, addr_type)) int_type) (alloca x int_type)
                    else store (Lvar("%.param."^x, typ)) (alloca x typ)) args in
      let code = List.fold_left (@@) (Llabel "entry") store_params in
-     let code = code @@ return (cast (compile_expr body) addr_type) in
+     let body = compile_expr body in
+     let code = code @@ if typeof body = Void then body else return (cast body addr_type) in
      let argument_list = List.map (fun (id, _) -> "%.param." ^ id, addr_type) in
      ignore (emit_llvm (Ldefine(translate_symbol name, argument_list args, code)))
 (*  with Llvm_error s ->
