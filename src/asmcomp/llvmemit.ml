@@ -68,11 +68,11 @@ type llvm_instr =
   | Llabel of string (* name *)
   | Lbr of string (* label *)
   | Lbr_cond of llvm_instr * string * string (* condition, then label, else label *)
-  | Lswitch of string * llvm_instr * int list * llvm_instr * llvm_type (* indexes, blocks *)
+  | Lswitch of string * llvm_instr * int array * llvm_instr * llvm_type (* indexes, blocks *)
   | Lreturn of llvm_instr * llvm_type (* value, type *)
   | Lseq of llvm_instr * llvm_instr (* value, type *)
   | Lcaml_raise_exn of llvm_instr (* argument *)
-  | Lcaml_catch_exn of string (* TODO figure out what information is needed *)
+  | Lcaml_catch_exn of string * llvm_instr * llvm_instr (* ident, what to do, where to store result *)
   | Lcaml_alloc of int (* length *)
   | Ldefine of string * (string * llvm_type) list * llvm_instr (* name, arguments, body *)
   | Lnothing
@@ -82,7 +82,7 @@ type llvm_instr =
 (* Print an expression in the intermediate format using a syntax inspired by
  * S-expressions *)
 let rec to_string = function
-  | Lvar(name, typ) -> "(local_store " ^ typename typ ^ " " ^ name ^ ")"
+  | Lvar(name, typ) -> "(var " ^ typename typ ^ " " ^ name ^ ")"
   | Lbinop(op, typ, left, right) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string left ^ " " ^ to_string right ^ ")"
   | Lcomp(op, typ, left, right) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string left ^ " " ^ to_string right ^ ")"
   | Lunop(op, typ, arg) -> "(" ^ op ^ " " ^ typename typ ^ " " ^ to_string arg ^ ")"
@@ -107,7 +107,7 @@ let rec to_string = function
   | Lreturn(value, typ) -> "(return " ^ typename typ ^ " " ^ to_string value ^ ")"
   | Lseq(instr1,instr2) -> to_string instr1 ^ ";\n\t" ^ to_string instr2
   | Lcaml_raise_exn exn -> "(raise " ^ to_string exn ^ ")"
-  | Lcaml_catch_exn foo -> "(catch " ^ foo ^ ")"
+  | Lcaml_catch_exn(id, instr, res) -> "(catch " ^ id ^ " storing " ^ to_string instr ^ " in " ^ to_string res ^ ")"
   | Lcaml_alloc len -> "(ALLOC " ^ string_of_int len ^ ")"
   | Ldefine(name, args, body) -> "(define " ^ name ^ " " ^ String.concat " " (List.map (fun (x,_) -> x) args) ^ " " ^ to_string body ^ ")"
   | Lnothing -> "nothing"
@@ -151,7 +151,7 @@ let rec typeof = function
   | Lseq(_, instr) when has_type instr -> typeof instr
   | Lseq(instr,_) -> typeof instr
   | Lcaml_raise_exn _ -> Void
-  | Lcaml_catch_exn _ -> error "catch not implemented, type unknown"
+  | Lcaml_catch_exn(_,_,res) -> typeof res
   | Lcaml_alloc _ -> addr_type
   | Ldefine(_,_,_) -> error "Function..."
   | Lnothing -> Void
@@ -194,24 +194,30 @@ let emit_instr instr = emit_nl ("\t" ^ instr)
 
 let rec lower instr =
   match instr with
-  | Lcaml_raise_exn exn -> Lcall(Void, Lvar("@caml_raise_exn", Function(Void, [addr_type])), [exn]) @@ Lunreachable
-  | Lcaml_catch_exn e -> Lnothing (* FIXME not implemented *)
+  | Lcaml_raise_exn exn ->
+      Lcall(Void, Lvar("@caml_raise_exn", Function(Void, [addr_type])), [exn]) @@ Lunreachable
+  | Lcaml_catch_exn(e, instr, res) -> Lnothing (* FIXME not implemented *)
   | Lcaml_alloc len ->
-      let counter = c() in
+      let new_young = "nyp" ^ c() in
+(*      let begin_lbl = "begin_alloc" ^ c() in*)
+      let run_gc_lbl = "run_gc" ^ c() in
+      let continue_lbl = "continue" ^ c() in
       let offset = string_of_int (-len) in
-      let new_young_ptr = Lload(Lvar("%new_young_ptr" ^ counter, Address addr_type)) in
+      let new_young_ptr = Lload(Lvar("%" ^ new_young, Address addr_type)) in
       let limit = Lload(Lvar("@caml_young_limit", Address addr_type)) in
       let cmp_res = Lcomp("icmp ult", addr_type, new_young_ptr, limit) in
-      Lbr ("begin_alloc" ^ counter)
-      @@ Llabel("begin_alloc" ^ counter)
-      @@ Lcomment ("allocating " ^ string_of_int len ^ " bytpes")
-      @@ Lstore(Lgetelementptr(young_ptr, Lconst(offset, int_type)), Lalloca("new_young_ptr" ^ counter, addr_type))
-      @@ Lbr_cond(cmp_res, "run_gc" ^ counter, "continue" ^ counter)
-      @@ Llabel ("run_gc" ^ counter)
+(*      Lbr begin_lbl
+      @@ Llabel begin_lbl
+      @@*)
+      Lcomment ("allocating " ^ string_of_int len ^ " bytes")
+      @@ Lstore(Lgetelementptr(young_ptr, Lconst(offset, int_type)), Lalloca(new_young, addr_type))
+      @@ Lbr_cond(cmp_res, run_gc_lbl, continue_lbl)
+      @@ Llabel run_gc_lbl
       @@ Lcall(Void, Lvar("@caml_call_gc", Any), [])
-      @@ Lbr ("continue" ^ counter)
-      @@ Llabel ("continue" ^ counter)
+      @@ Lbr continue_lbl
+      @@ Llabel continue_lbl
       @@ Lstore (new_young_ptr, Lvar("@caml_young_ptr", Address addr_type))
+      @@ new_young_ptr
   | Lbinop(op, typ, left, right) -> Lbinop(op, typ, lower left, lower right)
   | Lcomp(op, typ, left, right) -> Lcomp(op, typ, lower left, lower right)
   | Lunop(op, typ, arg) -> Lunop(op, typ, lower arg)
@@ -286,12 +292,12 @@ let rec emit_llvm instr =
       emit_llvm cond >>= fn
   | Lswitch(c, value, indexes, blocks, typ) ->
       let fn value =
-        let f i =
-          let i = string_of_int i in
-          typename int_type ^ " " ^ i ^ ", label %label" ^ i ^ "." ^ c
+        let f i index =
+          let index = string_of_int index in
+          typename int_type ^ " " ^ string_of_int i ^ ", label %label" ^ index ^ "." ^ c
         in
         emit_instr ("switch " ^ typename int_type ^ " " ^ value ^ ", label %default" ^ c ^ " [" ^
-                 String.concat "\n" (List.map f indexes) ^ "]")
+                 String.concat "\n" (Array.to_list (Array.mapi f indexes)) ^ "]")
       in
       ignore (emit_llvm value >>= just fn);
       emit_llvm blocks
@@ -301,7 +307,6 @@ let rec emit_llvm instr =
   | Lseq(instr1,Lcomment s) -> let res = emit_llvm instr1 in ignore (emit_llvm (Lcomment s)); res
   | Lseq(instr1,instr2) -> ignore (emit_llvm instr1); emit_llvm instr2
   | Ldefine(name, args, body) ->
-      counter := 0;
       let args = String.concat ", " (List.map (fun (name, typ) -> typename typ ^ " " ^ name) args) in
       emit_nl ("define " ^ calling_conv ^ " " ^ typename addr_type ^ " @" ^ name ^ "(" ^ args ^ ") gc \"ocaml\" {");
       ignore (emit_llvm body);

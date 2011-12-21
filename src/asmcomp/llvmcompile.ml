@@ -75,11 +75,12 @@ let translate_symbol s =
   done;
   !result
 
-let translate_machtype = function
-  | [| Addr |] -> addr_type
-  | [| Int |] -> addr_type
-  | [| Float |] -> addr_type
-  | _ -> error "unknown type"
+let translate_machtype typ =
+  if typ = Cmm.typ_addr then addr_type
+  else if typ = Cmm.typ_float then Double
+  else if typ = Cmm.typ_int then int_type
+  else if typ = Cmm.typ_void then addr_type (* HACK some extcalls of the same function are void calls while others return i64* *)
+  else error "uknown machtype"
 (* }}} *)
 
 (* {{{ *)
@@ -108,6 +109,7 @@ let cast value dest_typ =
       else error ("could not cast float to integer of size " ^ string_of_int i)
     | (Address i, Address j) -> if i == j then value else Lbitcast(value, typ, dest_typ)
     | (Address _, Integer i) -> Lptrtoint(value, typ, dest_typ)
+    | (Double, Address _) -> Linttoptr(Lbitcast(value, typ, float_sized_int), float_sized_int, dest_typ)
     | (a, b) ->
       if a == b
       then value
@@ -142,7 +144,7 @@ let getelementptr addr offset = Lgetelementptr(addr, offset)
 let load_exn_ptr () = local_load "@caml_exeption_pointer" (Address addr_type)
 let load_young_ptr () = local_load "@caml_young_ptr" (Address addr_type)
 
-let call fn args =
+let call typ fn args =
   let args = List.map (fun a -> assert (typeof a <> Void); cast a addr_type) args in
   Lcall(addr_type, fn, args)
 
@@ -153,10 +155,6 @@ let ccall typ fn args =
 let tailcall fn args =
   let args = List.map (fun a -> assert (typeof a <> Void); cast a addr_type) args in
   Lcall(addr_type, fn, args)
-
-let voidcall fn args =
-  let args = List.map (fun a -> assert (typeof a <> Void); cast a addr_type) args in
-  Lcall(Void, fn, args)
 
 let return value = Lreturn(value, typeof value)
 (* }}} *)
@@ -221,6 +219,7 @@ let rec caml_type expect = function
       Hashtbl.add types (translate_symbol (Ident.unique_name id)) addr_type; (* the exception's type *)
       caml_type expect with_expr
 (* }}} *)
+let exits = Hashtbl.create 10
 
 let rec helper in_tail_position instr =
   match instr with
@@ -270,24 +269,24 @@ let rec helper in_tail_position instr =
       | Cconst_symbol s :: args ->
           let args = compile_list args in
           add_function (addr_type, translate_symbol s, args);
-          (if in_tail_position then tailcall else call) (Lvar("@" ^ translate_symbol s, addr_type)) args
+          (if in_tail_position then tailcall else call addr_type) (Lvar("@" ^ translate_symbol s, addr_type)) args
       | clos :: res ->
           let args = compile_list res in
           let fn_type = Address(Function(addr_type, List.map (fun x -> addr_type) args)) in
           let tmp = helper false clos in
           assert (typeof tmp <> Void);
           let fn = cast tmp fn_type in
-          if in_tail_position then tailcall fn args else call fn args
+          if in_tail_position then tailcall fn args else call addr_type fn args
       | [] -> error "no function specified"
     end
   | Cop(Cextcall(fn, typ, alloc, debug), exprs) ->
       let args = compile_list exprs in
-      add_function (addr_type, fn, args);
-      ccall addr_type (Lvar("@" ^ fn, addr_type)) args
+      add_function (translate_machtype typ, fn, args);
+      ccall (translate_machtype typ) (Lvar("@" ^ fn, addr_type)) args
+
   | Cop(Calloc, args) ->
-      let new_young_ptr_instr = Lcaml_alloc (List.length args) in (* TODO figure out how much space a single element needs *)
-      let new_young_ptr = load_young_ptr () in 
-      let header = getelementptr new_young_ptr (Lconst("1", int_type)) in
+      let data = Lcaml_alloc (List.length args) in (* TODO figure out how much space a single element needs *)
+      let header = getelementptr data (Lconst("1", int_type)) in
       let args = List.map (helper false) args in
       let num = ref (-1) in
       let emit_arg x =
@@ -296,9 +295,8 @@ let rec helper in_tail_position instr =
         let elemptr = getelementptr header (Lconst(num, int_type)) in
         store x elemptr
       in
-      List.fold_left (fun a b -> a @@ emit_arg b) new_young_ptr_instr args @@
+      List.fold_left (fun a b -> a @@ emit_arg b) data args @@
       getelementptr header (Lconst("1", int_type))
-
   | Cop(Cstore mem, [addr; value]) ->
       let addr = helper false addr in
       let value = helper false value in
@@ -324,11 +322,11 @@ let rec helper in_tail_position instr =
       (* TODO replace the following by code that actually does the right thing *)
       let cond = comp "icmp ule" (typeof length) index length in
       let c = c () in
-      add_function (Void, "caml_ml_array_bound_error", []);
+      add_function (addr_type, "caml_ml_array_bound_error", []);
       Lcomment "checking bounds..."
       @@ Lbr_cond(cond, "out_of_bounds" ^ c, "ok" ^ c)
       @@ Llabel ("out_of_bounds" ^ c)
-      @@ voidcall (Lvar("@caml_ml_array_bound_error",Any)) []
+      @@ call Void (Lvar("@caml_ml_array_bound_error",Any)) []
       @@ Lbr ("ok" ^ c)
       @@ Llabel ("ok" ^ c)
   | Cop(Ccheckbound _, _) -> error "not implemented: checkound with #args != 2"
@@ -355,23 +353,25 @@ let rec helper in_tail_position instr =
       in if typ != Void then res @@ local_load ("%if_res" ^ c) (Address typ) else res
     end
   | Cswitch(expr,indexes,exprs) ->
-      let indexes = Array.to_list indexes in
-      let exprs = List.map (helper in_tail_position) (Array.to_list exprs) in
+      let exprs = Array.map (fun x -> ignore (c()); helper in_tail_position x) exprs in
       let c = c () in
-      (* TODO implement switch *)
-      let typ = try typeof (List.find (fun x -> typeof x != Void) exprs) with Not_found -> Void in
-      let value = alloca ("switch_res" ^ c) typ @@ helper false expr in
+      let typ = try typeof (List.find (fun x -> typeof x != Void) (Array.to_list exprs)) with Not_found -> Void in
+      let value = alloca ("switch_res" ^ c) (if typ != Void then typ else int_type) @@ helper false expr in
       let blocks =
-        List.map (fun (i, expr) ->
-                    Llabel ("label" ^ string_of_int i ^ "." ^ c)
-                    @@ expr
-                    @@ Lbr ("end" ^ c)) (List.combine indexes exprs) in
+        let fn i expr =
+          Llabel ("label" ^ string_of_int i ^ "." ^ c)
+          @@ expr
+          @@ Lbr ("end" ^ c)
+        in
+        Array.mapi fn exprs
+      in
+      add_const "caml_exn_Match_failure";
       let blocks =
-        List.fold_left (@@) (Lcomment "blocks") blocks
+        Array.fold_left (@@) (Lcomment "blocks") blocks
         @@ Llabel ("default" ^ c)
         @@ Lcaml_raise_exn (Lvar("@caml_exn_Match_failure", addr_type))
         @@ Llabel ("end" ^ c)
-        @@ Lload(Lvar("%switch_res" ^ c, Address typ))
+        @@ (if typ == Void then Lnothing else Lload(Lvar("%switch_res" ^ c, Address typ)))
       in Lswitch(c, value, indexes, blocks, typ)
   | Cloop expr ->
       let c = c () in
@@ -380,31 +380,44 @@ let rec helper in_tail_position instr =
       @@ helper false expr
       @@ Lbr ("loop" ^ c)
   | Ccatch(i,ids,expr1,expr2) ->
+      let c = c () in
+      let ids =
+        let fn id =
+          let id = translate_symbol (Ident.unique_name id) in
+          Hashtbl.add types id addr_type;
+          alloca id addr_type
+        in
+        List.map fn ids
+      in
+      Hashtbl.add exits i c;
+      let expr1 = helper false expr1
+      and expr2 = helper false expr2 in
+      Hashtbl.remove exits i;
       Lcomment "catching..."
-      @@ helper false expr1
-      @@ Lbr ("exit" ^ string_of_int i)
-      @@ Llabel ("exit" ^ string_of_int i)
-      @@ helper false expr2
+      @@ List.fold_left (@@) Lnothing ids
+      @@ expr1
+      @@ Lbr ("exit" ^ string_of_int i ^ "." ^ c)
+      @@ Llabel ("exit" ^ string_of_int i ^ "." ^ c)
+      @@ expr2
       @@ Lcomment "done catching"
   | Cexit(i,exprs) ->
+      let exprs = List.map (fun x -> (helper false x)) exprs in
       Lcomment "exiting loop"
-      @@ List.fold_left (fun lst expr -> helper false expr @@ lst) Lnothing exprs
-      @@ Lbr ("exit" ^ string_of_int i)
+      @@ List.fold_left (@@) Lnothing exprs
+      @@ Lbr ("exit" ^ string_of_int i ^ "." ^ Hashtbl.find exits i)
   | Ctrywith(try_expr, id, with_expr) ->
+      Hashtbl.add types (translate_symbol (Ident.unique_name id)) addr_type;
       let counter = c () in
       let res = helper in_tail_position try_expr in
       let with_res = helper in_tail_position with_expr in
       let typ = if typeof res != Void then typeof res else typeof with_res in
       let try_with_res = Lvar("%try_with_res" ^ counter, if typ == Void then int_type else Address typ) in
-      (*Hashtbl.add types (translate_symbol (Ident.unique_name id)) addr_type;*)
-      (* TODO generate usable code here *)
       let trywith =
         Lcomment "begin of try-with-block"
-        @@ alloca ("try_with_res" ^ counter) typ
+        @@ alloca ("try_with_res" ^ counter) (if typ != Void then typ else int_type)
         @@ store_non_void res try_with_res
         @@ Lcomment "end of try block"
-        @@ alloca (translate_symbol (Ident.unique_name id)) int_type (* TODO replace by type appropriate for exceptions *)
-        @@ store_non_void with_res try_with_res
+        @@ Lcaml_catch_exn(translate_symbol (Ident.unique_name id), with_res, try_with_res)
         @@ Lcomment "end of with block"
       in if typ == Void then trywith else trywith @@ local_load ("%try_with_res" ^ counter) (Address typ)
 
@@ -424,8 +437,8 @@ and compile_operation op exprs =
           cast (comp (translate_fcomp op) Double left right) int_type
       | Ccmpa op ->
           cast (comp (translate_ucomp op) int_type left right) int_type
-      | Cadda | Csuba ->
-           cast (binop "add" int_type (cast left int_type) (cast right int_type)) addr_type
+      | Cadda -> getelementptr (cast left addr_type) (cast right int_type)
+      | Csuba -> getelementptr (cast left addr_type) (binop "sub" int_type (Lconst("0", int_type)) (cast right int_type))
       | _ -> error "Not a binary operator"
       end
 
@@ -471,29 +484,29 @@ let compile_fundecl fd_cmm =
   let name = fd_cmm.fun_name in
   let args = fd_cmm.fun_args in
   let body = fd_cmm.fun_body in
-  print_endline ("compiling " ^ name);
   Hashtbl.clear types;
   List.iter (fun (name, args) -> Hashtbl.add types (translate_symbol name) (Function(addr_type, args))) !local_functions;
   ignore (caml_type Any body);
-  let args = List.map (fun (x, typ) -> (translate_symbol (Ident.unique_name x), translate_machtype typ)) args
-  in (*try*)
-     let store_params =
-       List.map (fun (x, typ) ->
-                   let typ = try Hashtbl.find types x with Not_found -> addr_type in
-                   if is_int typ
-                   then store (cast (Lvar("%.param." ^ x, addr_type)) int_type) (alloca x int_type)
-                   else store (Lvar("%.param."^x, typ)) (alloca x typ)) args in
-     let code = List.fold_left (@@) (Llabel "entry") store_params in
-     let body = compile_expr body in
-     let code = code @@ if typeof body = Void then body else return (cast body addr_type) in
-     let argument_list = List.map (fun (id, _) -> "%.param." ^ id, addr_type) in
-     ignore (emit_llvm (Ldefine(translate_symbol name, argument_list args, code)))
-(*  with Llvm_error s ->
+  let args = List.map (fun (x, typ) -> (translate_symbol (Ident.unique_name x), addr_type)) args in
+  try
+    let foo (x, typ) =
+      let typ = try Hashtbl.find types x with Not_found -> addr_type in
+      if is_int typ
+      then store (cast (Lvar("%.param." ^ x, addr_type)) typ) (alloca x typ)
+      else store (Lvar("%.param."^x, addr_type)) (alloca x addr_type)
+    in
+    let store_params = List.map foo args in
+    let code = List.fold_left (@@) (Llabel "entry") store_params in
+    let body = compile_expr body in
+    let code = code @@ if typeof body = Void then body else return (cast body addr_type) in
+    let argument_list = List.map (fun (id, _) -> "%.param." ^ id, addr_type) in
+    ignore (emit_llvm (Ldefine(translate_symbol name, argument_list args, code)))
+  with Llvm_error s ->
     print_endline ("error while compiling function " ^ name ^ ":");
     print_endline s;
     emit_constant_declarations ();
     emit_function_declarations ();
-    error s*)
+    error s
 
 let data d = Llvmemit.data d
 

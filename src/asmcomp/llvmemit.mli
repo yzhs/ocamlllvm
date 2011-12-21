@@ -45,11 +45,11 @@ type llvm_instr =
   | Llabel of string (* name *)
   | Lbr of string (* label *)
   | Lbr_cond of llvm_instr * string * string (* condition, then label, else label *)
-  | Lswitch of string * llvm_instr * int list * llvm_instr * llvm_type (* value, type *)
+  | Lswitch of string * llvm_instr * int array * llvm_instr * llvm_type (* value, type *)
   | Lreturn of llvm_instr * llvm_type (* value, type *)
   | Lseq of llvm_instr * llvm_instr (* value, type *)
   | Lcaml_raise_exn of llvm_instr (* argument *)
-  | Lcaml_catch_exn of string (* TODO figure out what information is needed *)
+  | Lcaml_catch_exn of string * llvm_instr * llvm_instr (* ident, what to do, where to store result *)
   | Lcaml_alloc of int (* length *)
   | Ldefine of string * (string * llvm_type) list * llvm_instr (* name, arguments, body *)
   | Lnothing
