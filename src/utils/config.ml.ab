@@ -67,8 +67,8 @@ let model = "$model"
 let system = "$system"
 
 let asm = "as"
-let llc = "llc"
-let opt = "opt"
+let llc = "llc -relocation-model=pic"
+let opt = "opt -S -mem2reg -std-compile-opts"
 
 let ext_obj = "$ext_obj"
 let ext_asm = "$ext_asm"

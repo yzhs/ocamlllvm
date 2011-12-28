@@ -82,7 +82,7 @@ let compile_phrase ppf p =
   if !use_llvm then
   match p with
   | Cfunction fd -> Llvmcompile.compile_fundecl fd
-  | Cdata dl -> Llvmcompile.data dl
+  | Cdata dl -> Llvmemit.data dl
   else
   match p with
   | Cfunction fd -> compile_fundecl ppf fd
@@ -100,10 +100,11 @@ let compile_genfuns ppf f =
     (Cmmgen.generic_functions true [Compilenv.current_unit_infos ()])
 
 let compile_implementation ?toplevel prefixname ppf (size, lam) =
+  let suffix = if !use_llvm then ext_llvm else ext_asm in
   let asmfile =
     if !keep_asm_file
-    then prefixname ^ ext_asm
-    else Filename.temp_file "camlasm" ext_asm in
+    then prefixname ^ suffix
+    else Filename.temp_file "camlasm" suffix in
   let oc = open_out asmfile in
   begin try
     Emitaux.output_channel := oc;

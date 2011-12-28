@@ -286,7 +286,7 @@ let call_linker file_list startup_file output_name =
   let files = startup_file :: (List.rev file_list) in
   let files, c_lib =
     if (not !Clflags.output_c_object) || main_dll then
-      files @ (List.rev !Clflags.ccobjs) @ runtime_lib (),
+      (List.rev !Clflags.ccobjs) @ runtime_lib () @ files,
       (if !Clflags.nopervasives then "" else Config.native_c_libraries)
     else
       files, ""
@@ -328,14 +328,15 @@ let link ppf objfiles output_name =
   make_startup_file ppf startup units_tolink;
   let startup_obj = Filename.temp_file "camlstartup" ext_obj in
   let temp1 =
-    if !Clflags.keep_startup_file then output_name ^ ".startup.opt" ^ ext_llvm
-    else Filename.temp_file "camlstartup.opt" suffix
+    if !Clflags.keep_startup_file then output_name ^ ".startup.bc"
+    else Filename.temp_file "camlstartup" ".bc"
   in
   let temp2 =
     if !Clflags.keep_startup_file then output_name ^ ".startup" ^ ext_asm
     else Filename.temp_file "camlstartup" ext_asm
   in
   if !Clflags.use_llvm then begin
+    print_endline ("assembling " ^ startup ^ " into " ^ startup_obj ^ " using " ^ temp1 ^ " and " ^ temp2);
     if Llvmemit.assemble_file temp1 temp2 startup startup_obj <> 0 then
     raise(Error(Assembler_error startup));
   end else

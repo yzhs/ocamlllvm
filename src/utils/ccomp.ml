@@ -100,6 +100,7 @@ type link_mode =
 
 let call_linker mode output_name files extra =
   let files = quote_files files in
+  let asmrun = "'" ^ Config.standard_library ^ "/libasmrun.a'" in
   let cmd =
     if mode = Partial then
       Printf.sprintf "%s%s %s %s"
@@ -108,7 +109,7 @@ let call_linker mode output_name files extra =
         files
         extra
     else
-      Printf.sprintf "%s -o %s %s %s %s %s %s %s"
+      Printf.sprintf "%s -o %s %s %s %s %s %s %s %s"
         (match !Clflags.c_compiler, mode with
         | Some cc, _ -> cc
         | None, Exe -> Config.mkexe
@@ -122,6 +123,7 @@ let call_linker mode output_name files extra =
         (quote_prefixed "-L" !Config.load_path)
         (String.concat " " (List.rev !Clflags.ccopts))
         files
+        asmrun
         extra
   in
   command cmd = 0
