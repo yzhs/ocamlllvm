@@ -48,12 +48,13 @@ type llvm_instr =
 
 let error s = raise (Llvm_error s)
 
-let size_int = 8 * Arch.size_int
-let size_float = 8 * Arch.size_float
+let size_addr = Arch.size_addr
+let size_int = Arch.size_int
+let size_float = Arch.size_float
 
-let int_type = Integer size_int
+let int_type = Integer (8 * size_int)
 let addr_type = Address int_type
-let float_sized_int = Integer size_float
+let float_sized_int = Integer (8 * size_float)
 
 let rec string_of_type = function
   | Integer i -> "i" ^ string_of_int i

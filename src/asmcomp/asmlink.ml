@@ -336,7 +336,6 @@ let link ppf objfiles output_name =
     else Filename.temp_file "camlstartup" ext_asm
   in
   if !Clflags.use_llvm then begin
-    print_endline ("assembling " ^ startup ^ " into " ^ startup_obj ^ " using " ^ temp1 ^ " and " ^ temp2);
     if Llvmemit.assemble_file temp1 temp2 startup startup_obj <> 0 then
     raise(Error(Assembler_error startup));
   end else

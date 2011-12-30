@@ -95,17 +95,17 @@ let cast value dest_typ =
       then Lcast(Zext, value, typ, dest_typ)
       else Lcast(Trunc, value, typ, dest_typ)
     | (Integer i, Address _) ->
-      if i == size_int
+      if i == size_int * 8
       then Lcast(Inttoptr, value, typ, dest_typ)
       else error ("could not cast integer of size " ^ string_of_int i ^ " to pointer")
     | (Integer i, Double) ->
-      if i == size_float
+      if i == size_float * 8
       then Lcast(Bitcast, value, typ, dest_typ)
       else error ("could not cast integer of size " ^ string_of_int i ^ " to pointer")
     | (Integer _, Function(_,_)) -> Lcast(Inttoptr, value, typ, dest_typ)
     | (Integer _, _) -> error ("invalid cast from integer to " ^ string_of_type dest_typ)
     | (Double, Integer i) ->
-      if i == size_float
+      if i == size_float * 8
       then Lcast(Bitcast, value, typ, dest_typ)
       else error ("could not cast float to integer of size " ^ string_of_int i)
     | (Address i, Address j) -> if i == j then value else Lcast(Bitcast, value, typ, dest_typ)
@@ -277,7 +277,7 @@ let rec helper in_tail_position in_try_block instr =
   | Ctuple [] -> Lconst(";", Void)
   | Ctuple exprs -> begin
       (* TODO What is Ctuple used for? Implement that. *)
-      Lconst(";tuple_res", Void)
+      Lconst("tuple_res", Void)
     end
 
   | Cop(Capply(typ, debug), Cconst_symbol s :: args) ->
@@ -301,18 +301,18 @@ let rec helper in_tail_position in_try_block instr =
       let c = c() in
       let data = Lcaml_alloc (List.length args) in (* TODO figure out how much space a single element needs *)
       let args = List.map (helper false in_try_block) args in
-      let num = ref (-1) in
+      let num = ref (-size_int) in
       let ptr = load (Lvar("%alloc" ^ c, Address addr_type)) in
       let emit_arg x =
-        num := !num + 1;
-        let num = string_of_int !num in
-        let header = getelementptr ptr (Lconst("1", int_type)) in
-        let elemptr = getelementptr header (Lconst(num, int_type)) in
+        let counter = string_of_int !num in
+        let header = getelementptr ptr (Lconst(string_of_int size_int, int_type)) in
+        let elemptr = getelementptr header (Lconst(counter, int_type)) in
+        num := !num + size_int;
         store x elemptr
       in
       store data (alloca ("alloc" ^ c) addr_type)
       @@ List.fold_left (fun a b -> a @@ emit_arg b) ptr args
-      @@ getelementptr ptr (Lconst("1", int_type))
+      @@ getelementptr ptr (Lconst(string_of_int size_int, int_type))
   | Cop(Cstore mem, [addr; value]) ->
       let addr = helper false in_try_block addr in
       let value = helper false in_try_block value in
@@ -333,7 +333,7 @@ let rec helper in_tail_position in_try_block instr =
       let arr = helper false in_try_block arr in
       let index = helper false in_try_block index in
       assert (typeof arr <> Void);
-      let header = getelementptr (cast arr addr_type) (Lconst("-" ^ string_of_int Arch.size_addr, int_type)) in
+      let header = getelementptr (cast arr addr_type) (Lconst("-" ^ string_of_int size_addr, int_type)) in
       let length = load header in
       let cond = comp "icmp ule" (typeof length) index length in
       let c = c () in
@@ -452,8 +452,8 @@ and compile_operation in_try_block op = function
   | [arg] -> begin
       let arg = helper false in_try_block arg in
       match op with
-      | Cfloatofint -> Lcast(Sitofp, arg, Integer size_float, Double)
-      | Cintoffloat -> Lcast(Fptosi, arg, Double, Integer size_float)
+      | Cfloatofint -> Lcast(Sitofp, arg, float_sized_int, Double)
+      | Cintoffloat -> Lcast(Fptosi, arg, Double, float_sized_int)
       | Cabsf -> Lccall(Double, Lvar("@fabs", Any), [arg])
       | Cnegf -> binop Op_subf Double (Lconst("0.0", Double)) arg
       | Cload mem ->

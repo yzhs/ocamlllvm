@@ -47,7 +47,9 @@ type llvm_instr =
 (* Raise an Llvm_error with the string given as an argument. *)
 val error : string -> 'a
 
-(* The length of an integer (and an address) in bits *)
+(* The length of an address in bits *)
+val size_addr : int
+(* The length of an integer in bits *)
 val size_int : int
 (* The length of a floating point number *)
 val size_float : int

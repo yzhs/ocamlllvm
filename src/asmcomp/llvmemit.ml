@@ -84,7 +84,7 @@ let rec lower instr =
       if len = 2 then Lccall(addr_type, Lvar("@caml_alloc1", Any), [])
       else if len = 3 then Lccall(addr_type, Lvar("@caml_alloc2", Any), [])
       else if len = 4 then Lccall(addr_type, Lvar("@caml_alloc3", Any), [])
-      else Lccall(addr_type, Lvar("@caml_allocN", Any), [Linttoptr(Lconst(string_of_int (len-1), int_type), int_type, addr_type)])
+      else Lccall(addr_type, Lvar("@caml_allocN", Any), [Lcast(Inttoptr, Lconst(string_of_int (len-1), int_type), int_type, addr_type)])
        *)
       (* TODO rewrite the code so it does not create a loop *)
       (* TODO tell LLVM that the garbage collection is unlikely *)
@@ -275,10 +275,10 @@ let header =
   [ "; vim: set ft=llvm:"
   ; "declare double @fabs(double)"
   ; "declare void @caml_raise_exn(" ^ addr_type ^ ") noreturn"
-  ; "declare ccc " ^ addr_type ^ " @caml_alloc1()"
-  ; "declare ccc " ^ addr_type ^ " @caml_alloc2()"
-  ; "declare ccc " ^ addr_type ^ " @caml_alloc3()"
-  ; "declare ccc " ^ addr_type ^ " @caml_allocN(" ^ addr_type ^ ")"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc1()"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc2()"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc3()"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_allocN(" ^ addr_type ^ ")"
   ; "declare ccc void @caml_call_gc()"
   ; "@caml_exception_pointer = external global " ^ addr_type ^ ""
   ; "@caml_young_ptr = external global " ^ addr_type ^ ""
