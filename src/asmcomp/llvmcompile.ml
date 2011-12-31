@@ -333,16 +333,14 @@ let rec helper in_tail_position in_try_block instr =
       let arr = helper false in_try_block arr in
       let index = helper false in_try_block index in
       assert (typeof arr <> Void);
-      let header = getelementptr (cast arr addr_type) (Lconst("-" ^ string_of_int size_addr, int_type)) in
-      let length = load header in
-      let cond = comp "icmp ule" (typeof length) index length in
+      let cond = comp "icmp ule" (typeof index) arr index in
       let c = c () in
       add_function (addr_type, "ccc", "caml_ml_array_bound_error", []);
       Lcomment "checking bounds..."
       @@ Lbr_cond(cond, "out_of_bounds" ^ c, "ok" ^ c)
       @@ Llabel ("out_of_bounds" ^ c)
       @@ call Void (Lvar("@caml_ml_array_bound_error",Any)) []
-      @@ Lbr ("ok" ^ c)
+      @@ Lunreachable
       @@ Llabel ("ok" ^ c)
   | Cop(Ccheckbound _, _) -> error "not implemented: checkound with #args != 2"
   | Cop(op, exprs) -> compile_operation in_try_block op exprs
