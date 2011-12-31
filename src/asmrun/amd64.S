@@ -285,9 +285,9 @@ FUNCTION(G(caml_allocN))
         jb      .L103
         addq    $8, %rsp                  /* drop desired size */
 #else
-	LOAD_VAR(caml_young_ptr, %r11)
-	subq	%rdi, %r11
-        CMP_VAR(caml_young_limit, %r11)
+	LOAD_VAR(caml_young_ptr, %rax)
+	subq	%rdi, %rax
+        CMP_VAR(caml_young_limit, %rax)
 	jb	.L103
 #endif
         ret
