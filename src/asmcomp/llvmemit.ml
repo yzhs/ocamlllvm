@@ -198,7 +198,7 @@ let rec emit_llvm instr =
       let fn (name, typ) = string_of_type typ ^ " " ^ name in
       let args = String.concat ", " (List.map fn args) in
       emit_nl ("define " ^ calling_conv ^ " " ^ string_of_type addr_type ^
-               " @" ^ name ^ "(" ^ args ^ ") gc \"ocaml\" {");
+               " @" ^ name ^ "(" ^ args ^ ") nounwind gc \"ocaml\" {");
       ignore (emit_llvm body);
       emit_nl "}\n";
       fail "define does not return anything"
@@ -255,11 +255,11 @@ and call cc ret fn args =
   in
   let f fn =
     if ret == Void then begin
-      emit_instr ("call " ^ cc ^ " " ^ string_of_type ret ^ " " ^ fn ^ "(" ^ args ^ ")");
+      emit_instr ("call " ^ cc ^ " " ^ string_of_type ret ^ " " ^ fn ^ "(" ^ args ^ ") nounwind");
       fail "void function does not return anything";
     end else begin
       let result = "%result" ^ c() in
-      emit_instr (result ^ " = call " ^ cc ^ " " ^ string_of_type ret ^ " " ^ fn ^ "(" ^ args ^ ")");
+      emit_instr (result ^ " = call " ^ cc ^ " " ^ string_of_type ret ^ " " ^ fn ^ "(" ^ args ^ ") nounwind");
       return result
     end
   in
@@ -273,13 +273,13 @@ and call cc ret fn args =
 let header =
   let addr_type = string_of_type addr_type in
   [ "; vim: set ft=llvm:"
-  ; "declare double @fabs(double)"
-  ; "declare void @caml_raise_exn(" ^ addr_type ^ ") noreturn"
-  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc1()"
-  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc2()"
-  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc3()"
-  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_allocN(" ^ addr_type ^ ")"
-  ; "declare ccc void @caml_call_gc()"
+  ; "declare double @fabs(double) nounwind"
+  ; "declare void @caml_raise_exn(" ^ addr_type ^ ") noreturn nounwind"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc1() nounwind"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc2() nounwind"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc3() nounwind"
+  ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_allocN(" ^ addr_type ^ ") nounwind"
+  ; "declare ccc void @caml_call_gc() nounwind"
   ; "@caml_exception_pointer = external global " ^ addr_type ^ ""
   ; "@caml_young_ptr = external global " ^ addr_type ^ ""
   ; "@caml_young_limit = external global " ^ addr_type ^ ""
@@ -308,7 +308,7 @@ let add_function (ret, cconv, str, args) =
 let emit_function_declarations () =
   let fn (ret_type, cconv, name, args) =
     emit_nl ("declare " ^ cconv ^ " " ^ ret_type ^ " @" ^ name ^
-             "(" ^ String.concat "," args ^ ")")
+             "(" ^ String.concat "," args ^ ") nounwind")
   in
   List.iter fn (List.filter (fun (_, _, name, _) -> not (List.mem name (List.map fst !local_functions))) !functions)
 
