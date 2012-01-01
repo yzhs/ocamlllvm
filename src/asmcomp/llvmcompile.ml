@@ -371,7 +371,11 @@ let rec helper in_tail_position in_try_block instr =
       let c = c () in
       let typ = try typeof (List.find (fun x -> typeof x != Void) (Array.to_list exprs)) with Not_found -> Void in
       let value = alloca ("switch_res" ^ c) (if typ != Void then typ else int_type) @@ helper false in_try_block expr in
-      let create_block lbl expr = Llabel (lbl ^ "." ^ c) @@ expr @@ Lbr ("end." ^ c) in
+      let create_block lbl expr =
+        Llabel (lbl ^ "." ^ c)
+        @@ (if typeof expr != Void then store expr (Lvar("%switch_res" ^ c, Address typ)) else Lnothing)
+        @@ Lbr ("end." ^ c)
+      in
       add_const "caml_exn_Match_failure";
       let default = create_block "default" (Lcaml_raise_exn(Lvar("@caml_exn_Match_failure", addr_type))) in
       let blocks = Array.mapi (fun i expr -> create_block ("case" ^ string_of_int i) expr) exprs in
