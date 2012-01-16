@@ -20,6 +20,9 @@ val compile_implementation :
 val compile_phrase :
     Format.formatter -> Cmm.phrase -> unit
 
+val begin_assembly : unit -> unit
+val end_assembly : unit -> unit
+
 type error = Assembler_error of string
 exception Error of error
 val report_error: Format.formatter -> error -> unit

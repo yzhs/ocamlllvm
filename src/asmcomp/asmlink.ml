@@ -203,7 +203,7 @@ let make_startup_file ppf filename units_list =
   Emitaux.output_channel := oc;
   Location.input_name := "caml_startup"; (* set name of "current" input *)
   Compilenv.reset "_startup"; (* set the name of the "current" compunit *)
-  if !Clflags.use_llvm then Llvmemit.begin_assembly() else Emit.begin_assembly();
+  Asmgen.begin_assembly();
   let name_list =
     List.flatten (List.map (fun (info,_,_) -> info.ui_defines) units_list) in
   compile_phrase (Cmmgen.entry_point name_list);
@@ -229,7 +229,7 @@ let make_startup_file ppf filename units_list =
   compile_phrase
     (Cmmgen.frame_table("_startup" :: "_system" :: name_list));
 
-  if !Clflags.use_llvm then Llvmemit.end_assembly() else Emit.end_assembly();
+  Asmgen.end_assembly();
   close_out oc
 
 let make_shared_startup_file ppf units filename =
@@ -238,7 +238,7 @@ let make_shared_startup_file ppf units filename =
   Emitaux.output_channel := oc;
   Location.input_name := "caml_startup";
   Compilenv.reset "_shared_startup";
-  Emit.begin_assembly();
+  Asmgen.begin_assembly();
   List.iter compile_phrase
     (Cmmgen.generic_functions true (List.map fst units));
   compile_phrase (Cmmgen.plugin_header units);
@@ -248,7 +248,7 @@ let make_shared_startup_file ppf units filename =
   (* this is to force a reference to all units, otherwise the linker
      might drop some of them (in case of libraries) *)
 
-  Emit.end_assembly();
+  Asmgen.end_assembly();
   close_out oc
 
 
@@ -336,7 +336,7 @@ let link ppf objfiles output_name =
     else Filename.temp_file "camlstartup" ext_asm
   in
   if !Clflags.use_llvm then begin
-    if Llvmemit.assemble_file temp1 temp2 startup startup_obj <> 0 then
+    if Llvmcompile.assemble_file temp1 temp2 startup startup_obj <> 0 then
     raise(Error(Assembler_error startup));
   end else
     if Proc.assemble_file startup startup_obj <> 0

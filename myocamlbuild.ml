@@ -491,11 +491,6 @@ let system = BaseEnvLight.var_get "system" env;;
 let windows = os_type = "Win32";;
 if windows then tag_any ["windows"];;
 
-(* stuff for using LLVM's OCaml bindings *)
-ocaml_lib ~extern:true ~dir:"+llvm" "llvm";;
-flag ["link"]
-  (S[A"-cclib"; A"-lstdc++"; A"llvm.cma"]);;
-
 (* C compiler flags *)
 flag ["compile"; "c"]
   (S[A"-ccopt"; A("-DOS_" ^ os_type);

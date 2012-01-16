@@ -36,6 +36,7 @@
 #include "ui.h"
 #endif
 
+uintnat exn;
 extern int caml_parser_trace;
 CAMLexport header_t caml_atom_table[256];
 char * caml_code_area_start, * caml_code_area_end;

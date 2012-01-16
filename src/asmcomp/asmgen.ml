@@ -79,14 +79,11 @@ let compile_fundecl (ppf : formatter) fd_cmm =
 
 let compile_phrase ppf p =
   if !dump_cmm then fprintf ppf "%a@." Printcmm.phrase p;
-  if !use_llvm then
+  let compile_fundecl = if !use_llvm then Llvmcompile.compile_fundecl else compile_fundecl ppf
+  and data = if !use_llvm then Llvmcompile.data else Emit.data in
   match p with
-  | Cfunction fd -> Llvmcompile.compile_fundecl fd
-  | Cdata dl -> Llvmemit.data dl
-  else
-  match p with
-  | Cfunction fd -> compile_fundecl ppf fd
-  | Cdata dl -> Emit.data dl
+  | Cfunction fd -> compile_fundecl fd
+  | Cdata dl -> data dl
 
 
 (* For the native toplevel: generates generic functions unless
@@ -99,6 +96,12 @@ let compile_genfuns ppf f =
        | _ -> ())
     (Cmmgen.generic_functions true [Compilenv.current_unit_infos ()])
 
+let begin_assembly () =
+  if !use_llvm then Llvmcompile.begin_assembly() else Emit.begin_assembly()
+
+let end_assembly () =
+  if !use_llvm then Llvmcompile.end_assembly() else Emit.end_assembly()
+
 let compile_implementation ?toplevel prefixname ppf (size, lam) =
   let suffix = if !use_llvm then ext_llvm else ext_asm in
   let asmfile =
@@ -108,10 +111,10 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
   let oc = open_out asmfile in
   begin try
     Emitaux.output_channel := oc;
-    if !use_llvm then Llvmemit.begin_assembly() else Emit.begin_assembly();
+    begin_assembly();
     Closure.intro size lam
     ++ Cmmgen.compunit size
-    ++ List.map (fun x -> Llvmcompile.read_function x; x)
+    ++ List.map (fun x -> Llvmcompile.read_function x; x) (* TODO only do this when compiling using LLVm *)
     ++ List.iter (compile_phrase ppf) ++ (fun () -> ());
     (match toplevel with None -> () | Some f -> compile_genfuns ppf f);
 
@@ -127,7 +130,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
             (List.map Primitive.native_name !Translmod.primitive_declarations))
       );
 
-    if !use_llvm then Llvmemit.end_assembly() else Emit.end_assembly();
+    end_assembly();
     close_out oc
   with x ->
     close_out oc;
@@ -142,7 +145,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
     if !Clflags.keep_asm_file then prefixname ^ ext_asm
     else Filename.temp_file prefixname ext_asm
   in
-  let assemble = if !use_llvm then Llvmemit.assemble_file temp1 temp2 else Proc.assemble_file in
+  let assemble = if !use_llvm then Llvmcompile.assemble_file temp1 temp2 else Proc.assemble_file in
   if assemble asmfile (prefixname ^ ext_obj) <> 0
     then raise(Error(Assembler_error asmfile));
   if !keep_asm_file then ()

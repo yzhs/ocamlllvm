@@ -1,6 +1,5 @@
 <src/{asmcomp,bytecomp,driver,parsing,toplevel,typing,utils}>: include
 <src/*/*.ml{,i}>: pkg_dynlink, pkg_findlib
-"src/ocmalllvm.native": link_llvm
 #<src/*/*.mlp>: process_mlp
 
 # OASIS_START
