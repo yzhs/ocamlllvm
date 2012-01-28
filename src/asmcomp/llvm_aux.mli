@@ -4,7 +4,9 @@ val print_debug : string -> unit
 
 val (++) : 'a -> ('a -> 'b) -> 'b
 
-val reg_to_string : Llvm_mach.ssa_reg -> string
+val reg_name : Llvm_mach.ssa_reg -> string
+
+val string_of_reg : Llvm_mach.ssa_reg -> string
 
 (* Print the internal representation of an LLVM instruction in a notation
  * inspired by S-expressions *)

@@ -1,8 +1,6 @@
 exception Llvm_error of string
 exception Cast_error of string
 
-type 'a error = Just of 'a | Error of string
-
 type llvm_type =
     Integer of int (* bitwidth *)
   | Double
@@ -97,12 +95,6 @@ val deref : llvm_type -> llvm_type
 
 (* Returns the type of result of the given instruction. *)
 val typeof : ssa_reg -> llvm_type
-
-(* The usual monad functions for ['a error]. *)
-val return : 'a -> 'a error
-val fail : string -> 'a error
-val (>>=) : 'a error -> ('a -> 'b error) -> 'b error
-val (+++) : 'a error -> 'b error -> ('a * 'b) error
 
 val reset_counter : unit -> unit
 val register : string -> llvm_type -> ssa_reg

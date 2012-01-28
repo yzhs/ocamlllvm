@@ -60,27 +60,6 @@ let translate_comp typ =
     end
   | _ -> error "no comparison operations are defined for this type"
 
-let emit_label lbl = emit_nl (lbl ^ ":")
-let emit_instr instr = emit_nl ("\t" ^ instr)
-
-let emit_op reg op typ args =
-  emit_instr (reg_to_string reg ^ " = " ^ op ^ " " ^ string_of_type typ ^ " " ^
-              String.concat ", " (List.map reg_to_string args))
-
-let arg_list args =
-  String.concat ", " (List.map (fun x -> string_of_type (typeof x) ^ " " ^ reg_to_string x) args)
-
-let emit_cast reg op value typ =
-  emit_instr (reg_to_string reg ^ " = " ^ op ^ " " ^ string_of_type (typeof value) ^
-              " " ^ reg_to_string value ^ " to " ^ string_of_type (typeof reg))
-
-let rec instr_iter f instr =
-  match instr.desc with
-    Lend -> ()
-  | _ -> f instr; instr_iter f instr.next
-
-let print_reg reg = string_of_type (typeof reg) ^ " " ^ reg_to_string reg
-
 let print_array f arr =
   String.concat ", " (Array.to_list (Array.map f arr))
 
@@ -88,17 +67,17 @@ let to_string instr = begin
   let res = instr.res in
   match instr.desc with
     Lend -> print_string "end"
-  | Lop op -> print_string (print_reg res ^ " = op " ^ string_of_binop op)
-  | Lcomp op -> print_string (print_reg res ^ " = comp " ^ string_of_comp (typeof instr.arg.(0)) op)
-  | Lcast op -> print_string (print_reg res ^ " = cast " ^ string_of_cast op)
-  | Lalloca -> print_string (print_reg res ^ " = alloca " ^ string_of_type (try deref (typeof res) with Cast_error s -> error ("dereferencing alloca argument " ^ reg_to_string res ^ " failed")))
-  | Lload -> print_string (print_reg res ^ " = load")
+  | Lop op -> print_string (string_of_reg res ^ " = op " ^ string_of_binop op)
+  | Lcomp op -> print_string (string_of_reg res ^ " = comp " ^ string_of_comp (typeof instr.arg.(0)) op)
+  | Lcast op -> print_string (string_of_reg res ^ " = cast " ^ string_of_cast op)
+  | Lalloca -> print_string (string_of_reg res ^ " = alloca " ^ string_of_type (try deref (typeof res) with Cast_error s -> error ("dereferencing alloca argument " ^ reg_name res ^ " failed")))
+  | Lload -> print_string (string_of_reg res ^ " = load")
   | Lstore -> print_string ("store ")
-  | Lgetelemptr -> print_string (print_reg res ^ " = getelemptr")
-  | Lfptosi -> print_string (print_reg res ^ " = fptosi")
-  | Lsitofp -> print_string (print_reg res ^ " = sitofp")
-  | Lcall fn -> print_string (print_reg res ^ " = call " ^ print_reg fn)
-  | Lextcall fn -> print_string (print_reg res ^ " = extcall " ^ print_reg fn)
+  | Lgetelemptr -> print_string (string_of_reg res ^ " = getelemptr")
+  | Lfptosi -> print_string (string_of_reg res ^ " = fptosi")
+  | Lsitofp -> print_string (string_of_reg res ^ " = sitofp")
+  | Lcall fn -> print_string (string_of_reg res ^ " = call " ^ string_of_reg fn)
+  | Lextcall fn -> print_string (string_of_reg res ^ " = extcall " ^ string_of_reg fn)
   | Llabel name -> print_string ("label " ^ name)
   | Lbranch name -> print_string ("branch " ^ name)
   | Lcondbranch(ifso, ifnot) -> print_string ("branch " ^ ifso ^ ", " ^ ifnot)
@@ -107,13 +86,31 @@ let to_string instr = begin
   | Lunreachable -> print_string ("unreachable")
   | Lcomment _ -> print_string ("comment")
   end;
-  print_endline (" (" ^ print_array print_reg instr.arg ^ ")")
+  print_endline (" (" ^ print_array string_of_reg instr.arg ^ ")")
+
+let emit_label lbl = emit_nl (lbl ^ ":")
+let emit_instr instr = emit_nl ("\t" ^ instr)
+
+let emit_op reg op typ args =
+  emit_instr (reg_name reg ^ " = " ^ op ^ " " ^ string_of_type typ ^ " " ^
+              String.concat ", " (List.map reg_name args))
+
+let arg_list args =
+  String.concat ", " (List.map string_of_reg args)
+
+let emit_cast reg op value typ =
+  emit_instr (reg_name reg ^ " = " ^ op ^ " " ^ string_of_reg value ^ " to " ^
+              string_of_type (typeof reg))
+
+let rec instr_iter f instr =
+  match instr.desc with
+    Lend -> ()
+  | _ -> f instr; instr_iter f instr.next
 
 let emit_call res cc fn args =
-  let reg_type reg = string_of_type (typeof reg) in
-  let fn = " " ^ reg_to_string fn ^ " (" ^ print_array (fun x -> reg_type x ^ " " ^ reg_to_string x) args ^ ") nounwind" in
-  emit_instr ((if res <> Nothing then reg_to_string res ^ " = " else "") ^ "call " ^
-              cc ^ " " ^ (if res <> Nothing then reg_type res else "void") ^ fn)
+  let fn = " " ^ reg_name fn ^ "(" ^ print_array string_of_reg args ^ ") nounwind" in
+  emit_instr ((if res <> Nothing then reg_name res ^ " = " else "") ^ "call " ^
+              cc ^ " " ^ (if res <> Nothing then string_of_type (typeof res) else "void") ^ fn)
 
 let emit_llvm instr =
   let { desc = desc; next = next; arg = arg; res = res; dbg = dbg } = instr in begin
@@ -126,13 +123,13 @@ let emit_llvm instr =
   | Lcast op, [|value|], Reg(_, typ) ->
       emit_cast res (string_of_cast op) value typ
   | Lalloca, [||], Reg(_, typ) ->
-      emit_instr (reg_to_string res ^ " = alloca " ^ string_of_type (try deref typ with Cast_error s -> error "dereferencing result type of Lalloca failed"))
-  | Lload, [|addr|], Reg(_, typ) ->
-      emit_op res "load" (typeof addr) [addr]
+      emit_instr (reg_name res ^ " = alloca " ^ string_of_type (try deref typ with Cast_error s -> error "dereferencing result type of Lalloca failed"))
+  | Lload, [|addr|], Reg(_, typ) -> emit_op res "load" (typeof addr) [addr]
+  | Lload, [|addr|], Const(_, typ) -> emit_op res "load" (typeof addr) [addr]
   | Lstore, [|value; addr|], Nothing ->
       emit_instr ("store " ^ arg_list [value; addr])
   | Lgetelemptr, [|addr; offset|], Reg(_, typ) ->
-      emit_instr (reg_to_string res ^ " = getelementptr " ^ arg_list [addr; offset])
+      emit_instr (reg_name res ^ " = getelementptr " ^ arg_list [addr; offset])
   | Lfptosi, [|value|], Reg(name, typ) -> emit_cast res "fptosi" value typ
   | Lsitofp, [|value|], Reg(name, typ) -> emit_cast res "sitofp" value typ
   | Lcall fn, args, _ -> emit_call res calling_conv fn args
@@ -140,48 +137,40 @@ let emit_llvm instr =
   | Llabel name, [||], Nothing -> emit_label name
   | Lbranch lbl, [||], Nothing -> emit_instr ("br label %" ^ lbl)
   | Lcondbranch(then_label, else_label), [|cond|], Nothing ->
-      emit_instr ("br i1 " ^ reg_to_string cond ^ ", label %" ^ then_label ^ ", label %" ^ else_label)
+      emit_instr ("br i1 " ^ reg_name cond ^ ", label %" ^ then_label ^ ", label %" ^ else_label)
   | Lswitch(default, lbls), [|value|], Nothing ->
       let typ = string_of_type (typeof value) in
       let fn i lbl = typ ^ " " ^ string_of_int i ^ ", label %" ^ lbl in
-      emit_instr ("switch " ^ typ ^ " " ^ reg_to_string value ^ ", label %" ^
-                  default ^ " [\n" ^
+      emit_instr ("switch " ^ typ ^ " " ^ reg_name value ^ ", label %" ^
+                  default ^ " [\n\t\t" ^
                   String.concat "\n\t\t" (Array.to_list (Array.mapi fn lbls)) ^
-                  "\t]")
+                  "\n\t]")
   | Lreturn, [||], Nothing -> emit_instr "ret void"
   | Lreturn, [|value|], Nothing ->
-      emit_instr ("ret " ^ string_of_type (typeof value) ^ " " ^ reg_to_string value)
+      emit_instr ("ret " ^ string_of_reg value)
   | Lunreachable, [||], Nothing -> emit_instr "unreachable"
   | Lcomment s, [||], Nothing -> emit_instr ("; " ^ s)
-  | _, _, _ -> error "unknown instruction"
+
+  | Lop op, _, _ -> error ("binop " ^ string_of_binop op ^ " used with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lcomp op, _, _ -> error ("comp " ^ string_of_comp (typeof arg.(0)) op ^ " used with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lcast op, _, _ -> error ("cast " ^ string_of_cast op ^ " used with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lalloca, _, _ -> error ("alloca with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lload, _, _ -> error ("load with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lstore, _, _ -> error ("store with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lgetelemptr, _, _ -> error ("getelemptr with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lfptosi, _, _ -> error ("fptosi with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lsitofp, _, _ -> error ("sitofp with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Llabel name, _, _ -> error ("label with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lbranch lbl, _, _ -> error ("branch with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lcondbranch(then_label, else_label), _, _ -> error ("condbranch with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lswitch(default, lbls), _, _ -> error ("switch with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lreturn, _, _ -> error ("return with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lunreachable, _, _ -> error ("unreachable with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Lcomment s, _, _ -> error ("comment with " ^ string_of_int (Array.length arg) ^ " arguments")
   end
 
-(*
-and call cc ret fn args =
-  let args =
-    let fn x =
-      match emit_llvm x with
-      | Just s -> string_of_type (typeof x) ^ " " ^ s
-      | Error s -> error ("failed to emit code for arguments of call:\n" ^ s)
-    in
-    String.concat ", " (List.map fn args)
-  in
-  let f fn =
-    if ret == Void then begin
-      emit_instr ("call " ^ cc ^ " " ^ string_of_type ret ^ " " ^ fn ^ "(" ^ args ^ ") nounwind");
-      fail "void function does not return anything";
-    end else begin
-      let result = "%result" ^ c() in
-      emit_instr (result ^ " = call " ^ cc ^ " " ^ string_of_type ret ^ " " ^ fn ^ "(" ^ args ^ ") nounwind");
-      return result
-    end
-  in
-  emit_llvm fn >>= f
- *)
-
 let fundecl = function { fun_name = name; fun_args = args; fun_body = body } ->
-  let fn reg = string_of_type (typeof reg) ^ " " ^ reg_to_string reg in
-  let args = String.concat ", " (List.map fn args) in
+  let args = String.concat ", " (List.map string_of_reg args) in
   emit_nl ("define " ^ calling_conv ^ " " ^ string_of_type addr_type ^
            " @" ^ name ^ "(" ^ args ^ ") nounwind gc \"ocaml\" {");
   begin

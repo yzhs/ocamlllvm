@@ -11,11 +11,6 @@ let c () = label_counter := !label_counter + 1; string_of_int !label_counter
 
 let types = Hashtbl.create 10
 
-(*let vars = Hashtbl.create 10
-let is_def = Hashtbl.mem vars*)
-
-let exits = Hashtbl.create 10
-
 (* {{{ *)
 let translate_op = function
   | Caddi -> Op_addi
@@ -123,9 +118,10 @@ let comp seq op left right typ = insert seq (Icomp op) [|left; right|] (register
 
 let getelemptr seq addr offset typ =
   insert seq Igetelementptr [|addr; offset|] (register "" (typeof addr)) typ
-
-let return seq value typ = insert seq Ireturn [|value|] Nothing typ
 (* }}} *)
+
+let add_type name typ =
+  Hashtbl.add types name typ
 
 (* very simple type inference algorithm used to determine which type an
  * identifier has *)
@@ -139,23 +135,23 @@ let rec caml_type expect = function
   | Cconst_natpointer _ -> addr_type
   | Cvar id ->
       let name = translate_id id in
-      if expect <> Any && not (Hashtbl.mem types name) then
-        Hashtbl.add types name expect;
+      if not (Hashtbl.mem types name) then
+        add_type name (if expect = Any then addr_type else expect);
       expect
   | Clet(id,arg,body) ->
       let name = translate_id id in
       let typ = caml_type Any arg in
-      if not (Hashtbl.mem types name) then begin
-        Hashtbl.add types name (if typ = Any then addr_type else typ);
-      end;
+      if not (Hashtbl.mem types name) then
+        add_type name (if typ = Any || typ = Void then addr_type else typ);
       caml_type expect body
   | Cassign(id,expr) ->
-      Hashtbl.add types (translate_id id) (caml_type Any expr);
+      let typ = caml_type Any expr in
+      add_type (translate_id id) typ;
       expect
   | Ctuple exprs -> ignore (List.map (caml_type Any) exprs); Any
   | Cop(Capply(typ, debug), exprs) -> ignore (List.map (caml_type Any) exprs); expect
   | Cop(Cextcall(fn, typ, alloc, debug), exprs) -> ignore (List.map (caml_type Any) exprs); expect
-  | Cop(Calloc, _) -> addr_type (* this is always the correct result type of an allocation *)
+  | Cop(Calloc, exprs) -> List.iter (fun x -> ignore (caml_type Any x)) exprs; addr_type (* this is always the correct result type of an allocation *)
   | Cop(Cstore mem, [addr; value]) -> let typ = caml_type Any value in ignore (caml_type (Address typ) addr); Void
   | Cop(Craise debug, args) -> ignore (List.map (caml_type Any) args); Void
   | Cop(Ccheckbound debug, [arr; index]) -> ignore (caml_type int_type index); ignore (caml_type addr_type arr); Void
@@ -193,29 +189,32 @@ let rec caml_type expect = function
   | Cifthenelse(cond, expr1, expr2) ->
       ignore (caml_type int_type cond);
       let typ = caml_type Any expr1 in caml_type typ expr2
-  | Cswitch(expr,is,exprs) -> expect (* TODO figure out the real type *)
+  | Cswitch(expr,is,exprs) -> Array.iter (fun x -> ignore (caml_type expect x)) exprs; expect (* TODO figure out the real type *)
   | Cloop expr -> ignore (caml_type Any expr); Void
   | Ccatch(i,ids,expr1,expr2) ->
       ignore (caml_type expect expr1);
       ignore (caml_type expect expr2);
       expect
-  | Cexit(i,exprs) -> Void (* TODO process exprs *)
+  | Cexit(i,exprs) -> List.iter (fun x -> ignore (caml_type expect x)) exprs; expect
   | Ctrywith(try_expr, id, with_expr) ->
-      ignore (caml_type expect try_expr);
-      Hashtbl.add types (translate_id id) addr_type; (* the exception's type *)
-      caml_type expect with_expr
+      let typ = caml_type expect try_expr in
+      add_type (translate_id id) addr_type; (* the exception's type *)
+      let with_typ = caml_type expect with_expr in
+      if typ = Void then with_typ else typ
 (* }}} *)
 
 let fabs = Const("@fabs", Address(Function(Double, [Double])))
 
 let reverse_instrs tmp = let seq = ref dummy_instr in List.iter (insert_instr_debug seq) !tmp; !seq
 
-
 let rec compile_instr seq instr =
   match instr with
-  | Cconst_int i -> Const(string_of_int i, int_type)
-  | Cconst_natint i -> Const(Nativeint.to_string i, int_type)
-  | Cconst_float f -> Const(f, Double)
+  | Cconst_int i ->
+      insert seq (Ibinop Op_addi) [|Const(string_of_int i, int_type); Const("0", int_type)|] (register "" int_type) int_type
+  | Cconst_natint i ->
+      insert seq (Ibinop Op_addi) [|Const(Nativeint.to_string i, int_type); Const("0", int_type)|] (register "" int_type) int_type
+  | Cconst_float f ->
+      insert seq (Ibinop Op_addf) [|Const(f, Double); Const("0.0", Double)|] (register "" Double) Double
   | Cconst_symbol s ->
       let typ =
         try Hashtbl.find types (translate_symbol s)
@@ -226,11 +225,12 @@ let rec compile_instr seq instr =
       | Function(_,_) -> ()
       | _ -> add_const (translate_symbol s) (* TODO why not store the actual type of the symbol? *)
       end;
-      Const("@" ^ translate_symbol s, if is_addr typ then typ else Address typ)
+      insert seq Igetelementptr [|Const("@" ^ translate_symbol s, if is_addr typ then typ else Address typ); Const("0", int_type)|]
+        (register (translate_symbol s) int_type) addr_type
   | Cconst_pointer i ->
-      Const("inttoptr(" ^ string_of_type int_type ^ " " ^ string_of_int i ^ " to " ^ string_of_type addr_type ^ ")", addr_type)
+      insert seq Igetelementptr [|Const(string_of_int i, int_type); Const("0", int_type)|] (register "" addr_type) addr_type
   | Cconst_natpointer i ->
-      Const("inttoptr(" ^ string_of_type int_type ^ " " ^ Nativeint.to_string i ^ " to " ^ string_of_type addr_type ^ ")", addr_type)
+      insert seq Igetelementptr [|Const(Nativeint.to_string i, int_type); Const("0", int_type)|] (register "" addr_type) addr_type
   | Cvar id ->
       print_debug "Cvar";
       let name = translate_id id in
@@ -261,33 +261,34 @@ let rec compile_instr seq instr =
       let arg_types = Array.to_list (Array.make (List.length args) addr_type) in
       let typ = Address(Function(addr_type, arg_types)) in
       add_function (addr_type, calling_conv, translate_symbol s, arg_types);
-      Hashtbl.add types (translate_symbol s) typ;
-      call seq (compile_instr seq symb) (Array.of_list args) "call_res" typ
+      add_type (translate_symbol s) typ;
+      call seq (compile_instr seq symb) (Array.of_list args) "call" typ
   | Cop(Capply(typ, debug), clos :: args) ->
       print_debug "Capply closure...";
       let args = List.map (compile_instr seq) args in
       let fn_type = Address(Function(addr_type, List.map (fun _ -> addr_type) args)) in
       let fn = compile_instr seq clos in
-      call seq fn (Array.of_list args) "call_res" fn_type
+      call seq fn (Array.of_list args) "call" fn_type
   | Cop(Capply(_,_), []) -> error "no function specified"
   | Cop(Cextcall(fn, typ, alloc, debug), exprs) ->
       print_debug "Cextcall";
       let args = List.map (compile_instr seq) exprs in
       add_function (translate_machtype typ, "ccc", fn, args);
       let fn_type = Address(Function(translate_machtype typ, List.map (fun _ -> addr_type) args)) in
-      Hashtbl.add types fn fn_type;
-      extcall seq (Const("@" ^ fn, fn_type)) (Array.of_list args) "extcall_res" fn_type
+      add_type fn fn_type;
+      extcall seq (Const("@" ^ fn, fn_type)) (Array.of_list args) "extcall" fn_type
   | Cop(Calloc, args) -> (* TODO figure out how much space a single element needs *)
       print_debug "Calloc";
       let args = List.map (compile_instr seq) args in
-      let ptr = alloc seq (List.length args) "alloc" (Address byte) in
+      let ptr = alloc seq (List.length args) "alloc" addr_type in
       let header = getelemptr seq ptr (Const("1", int_type)) addr_type in
       let num = ref (-1) in
       let emit_arg elem =
         let counter = string_of_int !num in
         let elemptr = getelemptr seq header (Const(counter, int_type)) addr_type in
         num := !num + 1;
-        store seq elem elemptr (typeof elem)
+        ignore (insert seq Istore [|elem; elemptr|] ptr (typeof elem))
+        (*store seq elem elemptr (typeof elem)*)
       in
       List.iter emit_arg args;
       header
@@ -331,34 +332,29 @@ let rec compile_instr seq instr =
       let blocks = Array.map (fun x -> let seq = ref [] in ignore (compile_instr seq x); reverse_instrs seq) exprs in
       let typ = try typeof (List.find (fun x -> typeof (last_instr x).res <> Void) (Array.to_list blocks)).res with Not_found -> Void in
       add_const "caml_exn_Match_failure";
-      let default =
-        instr_cons Iraise [|Const("@caml_exn_Match_failure", addr_type)|] Nothing Void
-          (instr_cons Iunreachable [||] Nothing Void dummy_instr)
-      in
-      let blocks = Array.append [|default|] blocks in
-      insert seq (Iswitch(indices, blocks)) [|value|] (register "switch_res" typ) typ
+      insert seq (Iswitch(indices, blocks)) [|value|] (register "switch" typ) typ
   | Cloop expr ->
       print_debug "Cloop";
       let seq = ref [] in
       ignore (compile_instr seq expr);
       insert seq (Iloop (reverse_instrs seq)) [||] Nothing Void
-  | Ccatch(i, ids, expr1, expr2) ->
+  | Ccatch(i, ids, body, handler) ->
       print_debug "Ccatch";
-      let c = c () in
       let fn id =
         let id = translate_id id in
-        Hashtbl.add types id addr_type;
+        add_type id addr_type;
         ignore (alloca seq id addr_type)
       in
       List.iter fn ids;
-      Hashtbl.add exits i c;
-      Hashtbl.remove exits i;
-      comment seq "catching...";
-      let instr1 = ref [] in
-      let instr2 = ref [] in
-      ignore (compile_instr instr1 expr1);
-      ignore (compile_instr instr2 expr2);
-      insert seq (Icatch(i, reverse_instrs instr1, reverse_instrs instr2)) [||] Nothing Void
+      let instr_body = ref [] in
+      let instr_handler = ref [] in
+      ignore (compile_instr instr_body body);
+      ignore (compile_instr instr_handler handler);
+      let body_instrs = reverse_instrs instr_body in
+      let handler_instrs = reverse_instrs instr_handler in
+      let typ = typeof (last_instr body_instrs).res in
+      let typ = if typ = Void then typeof (last_instr handler_instrs).res else typ in
+      insert seq (Icatch(i, body_instrs, handler_instrs)) [||] (if typ = Void then Nothing else register "catch_foo" typ) typ
   | Cexit(i, exprs) ->
       print_debug "Cexit";
       List.iter (fun x -> ignore (compile_instr seq x)) exprs;
@@ -369,9 +365,13 @@ let rec compile_instr seq instr =
       let with_seq = ref [] in
       (* TODO figure out what to do with id *)
       ignore (compile_instr try_seq try_expr);
-      ignore (load with_seq (Const("@exn", Address addr_type)) "exn" addr_type);
+      ignore (insert with_seq Iload [|Const("@exn", Address addr_type)|] (Const("%" ^ translate_id id, addr_type)) addr_type);
       ignore (compile_instr with_seq with_expr);
-      insert seq (Itrywith(reverse_instrs try_seq, reverse_instrs with_seq)) [||] Nothing Void
+      let try_instrs = reverse_instrs try_seq in
+      let with_instrs = reverse_instrs with_seq in
+      let typ = typeof (last_instr try_instrs).res in
+      let typ = if typ = Void then typeof (last_instr with_instrs).res else typ in
+      insert seq (Itrywith(try_instrs, with_instrs)) [||] (if typ = Void then Nothing else register "try_with" typ) typ
 
 and compile_operation seq op = function
   | [l;r] -> begin
@@ -428,7 +428,8 @@ let fundecl = function
       in
       List.iter foo args;
       let body = compile_instr tmp_seq body in
-      ignore (return tmp_seq body (if typeof body <> Void then addr_type else Void));
+
+      ignore (insert tmp_seq Ireturn [|body|] Nothing (if typeof body <> Void then addr_type else Void));
       let argument_list = List.map (fun (id, _) -> "param." ^ id, addr_type) in
       List.iter (insert_instr_debug instr_seq) !tmp_seq;
       {name = translate_symbol name; args = argument_list args; body = !instr_seq}

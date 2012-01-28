@@ -83,50 +83,43 @@ let register str typ = Llvm_mach.register str typ
 
 let cast_reg value dest_typ reg =
   let typ = typeof value in
-  if typ = dest_typ then value else begin
-  let cast op value = insert (Lcast op) [|value|] reg in
+  let cast op value reg = insert (Lcast op) [|value|] reg in
   begin
     match typ, dest_typ with
-    | (Integer i, Integer j) ->
-        if i < j then cast Zext value
-        else cast Trunc value
-    | (Integer i, Address _) ->
-        if i == size_int * 8 then cast Inttoptr value
-        else error ("could not cast integer of size " ^ string_of_int i ^ " to pointer")
-    | (Integer i, Double) ->
-        if i == size_float * 8 then cast Bitcast value
-        else error ("could not cast integer of size " ^ string_of_int i ^ " to pointer")
-    | (Integer _, Function(_,_)) -> cast Bitcast value
-    | (Integer _, _) -> error ("invalid cast from integer to " ^ string_of_type dest_typ)
-    | (Double, Integer i) ->
-        if i == size_float * 8 then cast Bitcast value
-        else error ("could not cast float to integer of size " ^ string_of_int i)
-    | (Address _, Address _) -> cast Bitcast value
-    | (Address _, Integer _) -> cast Ptrtoint value
-    | (Double, Address _) -> error "invalid cast: Double -> Address _"
+    | (a, b) when a = b -> ()
+    | (Integer i, Integer j) when i < j -> cast Zext value reg
+    | (Integer i, Integer j) when i > j -> cast Trunc value reg
+    | (Integer i, Address _) when i = size_int * 8 -> cast Inttoptr value reg
+    | (Integer i, Double) when i = size_float * 8 -> cast Bitcast value reg
+    | (Integer _, Function(_,_)) -> cast Bitcast value reg
+    | (Double, Integer i) when i = size_float * 8 -> cast Bitcast value reg
+    | (Address _, Address _) -> cast Bitcast value reg
+    | (Address _, Integer _) -> cast Ptrtoint value reg
+    | (Double, Address _) -> let tmp = register "tmp" float_sized_int in cast Bitcast value tmp; cast Inttoptr tmp reg
+    | (Address _, Double) -> let tmp = register "tmp" float_sized_int in cast Ptrtoint value tmp; cast Bitcast tmp reg
     | (a, b) -> error ("error while trying to cast " ^ string_of_type typ ^
-                       " to " ^ string_of_type dest_typ);
+                       " to " ^ string_of_type dest_typ)
   end;
-  reg
-  end
+  if typ = dest_typ then value else reg
 
 let cast value dest_typ = cast_reg value dest_typ (register "" dest_typ)
 
-let alloca result = insert Lalloca [||] result; result
+let alloca result = assert (typeof result <> Void); insert Lalloca [||] result; result
 let load addr result = insert Lload [|addr|] result; result
 let branch lbl = insert_simple (Lbranch lbl)
 let label lbl = insert_simple (Llabel lbl)
 let getelemptr addr offset res = insert Lgetelemptr [|addr; offset|] res; res
 
 let counter = ref 0
-let c () = counter := !counter + 1; string_of_int !counter
+let c () = counter := !counter + 1; "." ^ string_of_int !counter
+
+let exits = Hashtbl.create 10
 
 let rec last_instr instr =
   match instr.Llvm_mach.next.Llvm_mach.desc with
     Iend -> instr
   | _ -> last_instr instr.Llvm_mach.next
 
-(* TODO emit appropriate casts *)
 let rec linear i =
   let { Llvm_mach.desc = desc; Llvm_mach.next = next; Llvm_mach.arg = arg;
                          Llvm_mach.res = res; Llvm_mach.typ = typ; Llvm_mach.dbg = dbg } = i in
@@ -162,50 +155,73 @@ let rec linear i =
         insert Lsitofp [|cast value int_type|] res
     | Igetelementptr, [|addr; offset|] ->
         print_debug "Igetelementptr";
-        let tmp_reg = register "" typ in
-        insert Lgetelemptr [|cast addr typ; cast offset int_type|] tmp_reg;
-        ignore (cast_reg tmp_reg (typeof res) res)
+        if typeof res = typ then
+          insert Lgetelemptr [|cast addr typ; cast offset int_type|] res
+        else
+          let tmp_reg = register "" typ in
+          insert Lgetelemptr [|cast addr typ; cast offset int_type|] tmp_reg;
+          ignore (cast_reg tmp_reg (typeof res) res)
     | Icall fn, args ->
         print_debug "Icall";
-        insert (Lcall (cast fn typ)) (Array.map (fun arg -> cast arg addr_type) args) res
+        let ret = match typ with Address(Function(ret,_)) -> ret | _ -> error "not a function" in
+        if typeof res = ret then
+          insert (Lcall (cast fn typ)) (Array.map (fun arg -> cast arg addr_type) args) res
+        else
+          let tmp_reg = register "" ret in
+          insert (Lcall (cast fn typ)) (Array.map (fun arg -> cast arg addr_type) args) tmp_reg;
+          ignore (cast_reg tmp_reg (typeof res) res)
     | Iextcall fn, args ->
         print_debug "Iextcall";
-        insert (Lextcall (cast fn typ)) (Array.map (fun arg -> cast arg addr_type) args) res
+        let arg_typ = Array.of_list (match typ with Address(Function(_, args)) -> args | _ -> error "not a function") in
+        insert (Lextcall (cast fn typ)) (Array.mapi (fun i arg -> cast arg arg_typ.(i)) args) res
     | Iifthenelse(ifso, ifnot),  [|cond|] ->
         print_debug "Iifthenelse";
         assert (typeof cond = bit);
-        let then_lbl = "then" ^ c() in
-        let else_lbl = "else" ^ c() in
-        let endif_lbl = "endif" ^ c() in
+        let counter = c () in
+        let then_lbl, else_lbl, endif_lbl = "then" ^ counter, "else" ^ counter, "endif" ^ counter in
         let if_res = if typeof res = Void then Nothing else alloca (register "if_tmp" (Address (typeof res))) in
         insert (Lcondbranch(then_lbl, else_lbl)) [|cond|] Nothing;
         label then_lbl;
         linear ifso;
         if typeof (last_instr ifso).Llvm_mach.res = Void then ()
-        else insert Lstore [|(last_instr ifso).Llvm_mach.res; if_res|] Nothing;
+        else insert Lstore [|cast (last_instr ifso).Llvm_mach.res (typeof res); if_res|] Nothing;
         branch endif_lbl;
         label else_lbl;
         linear ifnot;
         if typeof (last_instr ifnot).Llvm_mach.res = Void then ()
-        else insert Lstore [|(last_instr ifnot).Llvm_mach.res; if_res|] Nothing;
+        else insert Lstore [|cast (last_instr ifnot).Llvm_mach.res (typeof res); if_res|] Nothing;
         branch endif_lbl;
         label endif_lbl;
         if typeof res = Void then ()
         else insert Lload [|if_res|] res
     | Iswitch(indexes, blocks), [|value|] ->
         print_debug "Iswitch";
-        ()
-        (*
-        let value_reg = register "" int_type in
-        n := linear next !n;
-        Array.iter (fun block -> n := linear block !n) blocks;
-        n := instr_cons (Lswitch(default, labels)) (* TODO is this correct? *)
-               [|value_reg|] Nothing !n;
-        cast value value_reg !n
-         *)
+        let c = c () in
+        let labels = Array.map (fun i -> "case" ^ string_of_int i ^ c) indexes in (* TODO create the correct labels *)
+        let switch_res = alloca (register "" (if typ <> Void then Address typ else addr_type)) in
+        insert (Lswitch("default" ^ c, labels)) [|cast value int_type|] Nothing;
+        label ("default" ^ c);
+        (* TODO throw an exception saying that the match was invalid*)
+        insert Lstore [|Const("@caml_exn_Match_failure", addr_type); Const("@exn", Address addr_type)|] Nothing;
+        insert (Lextcall (Const("@llvm.eh.sjlj.longjmp", Function(Void, [Address byte]))))
+          [|cast (Const("@jmp_buf", Address Jump_buffer)) (Address byte)|] Nothing;
+        insert_simple Lunreachable;
+        Array.iteri
+          (fun i block ->
+             label ("case" ^ string_of_int i ^ c);
+             linear block;
+             if typ <> Void then
+               let res = (last_instr block).Llvm_mach.res in
+               if typeof res <> Void then
+               insert Lstore [|cast (last_instr block).Llvm_mach.res typ; switch_res|] Nothing;
+             branch ("endswitch" ^ c);
+          ) blocks;
+        label ("endswitch" ^ c);
+        insert Lload [|switch_res|] res
     | Ireturn, [|value|] ->
         print_debug "Ireturn";
-        insert Lreturn [|cast value typ|] Nothing
+        if Void = typ then insert Lreturn [|cast (Const("123456789", int_type)) addr_type|] Nothing
+        else insert Lreturn [|cast value typ|] Nothing
     | Iunreachable, [||] ->
         print_debug "Iunreachable";
         insert_simple Lunreachable
@@ -215,28 +231,68 @@ let rec linear i =
     | Iraise, [|exn|] ->
         print_debug "Iraise";
         insert Lstore [|cast exn addr_type; Const("@exn", Address addr_type)|] Nothing;
-        insert (Lextcall (Const("@llvm.eh.sjlj.longjmp", Function(Void, [Address byte])))) [|cast (Const("@jmp_buf", Address Jump_buffer)) (Address byte)|] Nothing;
+        insert (Lextcall (Const("@llvm.eh.sjlj.longjmp", Function(Void, [Address byte])))) [|cast (Const("@jmp_buf", Address Jump_buffer)) (Address byte)|] Nothing
     | Itrywith(try_instr, with_instr), [||] -> 
         print_debug "Itrywith";
+        let c = c() in
+        let try_lbl, with_lbl, cont_lbl = "try" ^ c, "with" ^ c, "cont" ^ c in
+        (* TODO write exception handling code *)
+        (* call setjmp *)
+        (* if setjmp returned 0 *)
         let old_jmp_buf = alloca (register "old_jmp_buf" (Address Jump_buffer)) in
-        let temp_buf = load (cast (Const("@jmp_buf", Address Jump_buffer)) (Address byte)) (register "temp_buf" Jump_buffer) in
+        let temp_buf = load (Const("@jmp_buf", Address Jump_buffer)) (register "" Jump_buffer) in
         insert Lstore [|temp_buf; old_jmp_buf|] Nothing;
-        ignore (load (Const("@exn", addr_type)) res)
-    | Icatch(i, instr1, instr2), [||] ->
+        let set_jmp_res = register "" (Integer 32) in
+        insert (Lextcall (Const("@llvm.eh.sjlj.setjmp", Function(Integer 32, [Address byte]))))
+          [|cast (Const("@jmp_buf", Address Jump_buffer)) (Address byte)|] set_jmp_res;
+        let tmp = if typ <> Void then alloca (register "try_with_tmp" (Address typ)) else Nothing in
+        let cond = register "" bit in
+        insert (Lcomp Comp_eq) [|set_jmp_res; Const("0", int_type)|] cond;
+        insert (Lcondbranch(try_lbl, with_lbl)) [|cond|] Nothing;
+
+        let try_res = (last_instr try_instr).Llvm_mach.res in
+        label try_lbl;
+        linear try_instr;
+        if typeof try_res <> Void then insert Lstore [|cast try_res typ; tmp|] Nothing;
+        branch cont_lbl;
+
+        let with_res = (last_instr with_instr).Llvm_mach.res in
+        label with_lbl;
+        linear with_instr;
+        if typeof with_res <> Void then insert Lstore [|cast with_res typ; tmp|] Nothing;
+        branch cont_lbl;
+
+        label cont_lbl;
+        if typ <> Void then insert Lload [|tmp|] res
+    | Icatch(i, body, handler), [||] ->
+        let c = c () in
+        Hashtbl.add exits i c;
         print_debug "Icatch";
-        ()
+        let tmp = if typ <> Void then alloca (register "catch_tmp" (Address typ)) else Nothing in
+        linear body;
+        let body_res = (last_instr body).Llvm_mach.res in
+        if typeof body_res <> Void then insert Lstore [|cast body_res typ; tmp|] Nothing else insert_simple (Lcomment "nothing to store in body");
+        branch ("exit" ^ string_of_int i ^ c);
+        label ("exit" ^ string_of_int i ^ c);
+        Hashtbl.remove exits i;
+        linear handler;
+        let handler_res = (last_instr handler).Llvm_mach.res in
+        if typeof handler_res <> Void then insert Lstore [|cast handler_res typ; tmp|] Nothing
+        else insert_simple (Lcomment "nothing to store in handler");
+        if typ <> Void then insert Lload [|tmp|] res
     | Iexit i, [||] ->
         print_debug "Iexit";
-        ()
+        branch ("exit" ^ string_of_int i ^ Hashtbl.find exits i)
     | Ialloc len, [||] ->
         print_debug "Ialloc";
-        let begin_lbl, collect_lbl, continue_lbl = "begin" ^ c(), "collect" ^ c(), "continue" ^ c() in
+        let counter = c () in
+        let begin_lbl, collect_lbl, continue_lbl = "begin" ^ counter, "collect" ^ counter, "continue" ^ counter in
         insert_simple (Lcomment ("allocating " ^ string_of_int len ^ "*8 bytes"));
         branch begin_lbl;
         label begin_lbl;
         let young_limit = load (Const("@caml_young_limit", Address addr_type)) (register "young_limit" addr_type) in
         let young_ptr = load (Const("@caml_young_ptr", Address addr_type)) (register "young_ptr" addr_type) in
-        let nyp = getelemptr young_ptr (Const(string_of_int (-len), int_type)) (register "" (typeof young_ptr)) in
+        let nyp = getelemptr young_ptr (Const(string_of_int (-len), int_type)) (*register "" (typeof young_ptr)*) res in
         let cmp_res = register "enough_memory" bit in
         insert (Lcomp Comp_lt) [|nyp; young_limit|] cmp_res;
         insert (Lcondbranch(collect_lbl, continue_lbl)) [|cmp_res|] Nothing;
@@ -244,21 +300,23 @@ let rec linear i =
         insert_simple (Lextcall (Const("@caml_call_gc", Function(Void, []))));
         branch begin_lbl;
         label continue_lbl;
-        insert Lstore [|nyp; Const("@caml_young_ptr", Address addr_type)|] Nothing;
-        insert (Lcast Bitcast) [|nyp|] res
+        insert Lstore [|nyp; Const("@caml_young_ptr", Address addr_type)|] Nothing
         (*
-        if len = 2 then Iccall(addr_type, Ivar("@caml_alloc1", Any), [])
-        else if len = 3 then Iccall(addr_type, Ivar("@caml_alloc2", Any), [])
-        else if len = 4 then Iccall(addr_type, Ivar("@caml_alloc3", Any), [])
-        else Iccall(addr_type, Ivar("@caml_allocN", Any), [Icast(Inttoptr, Iconst(string_of_int (len-1), int_type), int_type, addr_type)])
-         *)
+        let alloc, args =
+          match len with
+            2 -> "@caml_alloc1", []
+          | 3 -> "@caml_alloc2", []
+          | 4 -> "@caml_alloc3", []
+          | _ -> "@caml_allocN", [addr_type]
+        in
+        insert (Lextcall (Const(alloc, Function(addr_type, args))))
+          (if len > 4 then [|Const("inttoptr(" ^ string_of_type int_type ^ " " ^ string_of_int (len-1) ^ " to " ^ string_of_type addr_type ^ ")", addr_type)|] else [||]) res
+        *)
+
         (* TODO rewrite the code so it does not create a loop *)
         (* TODO tell LLVM that the garbage collection is unlikely *)
     | _, _ -> error ("unknown instruction:\n" ^ Llvm_aux.to_string i)
   end; linear next end
-(*
-      @@ Istore(addr_type, Icast(Igetelementptr(young_ptr, Iconst(offset, int_type)), typeof young_ptr, addr_type), Ialloca(new_young, addr_type))
- *)
 
 let rec len instr =
   match instr.desc with

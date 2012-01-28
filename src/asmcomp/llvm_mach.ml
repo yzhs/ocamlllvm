@@ -1,8 +1,6 @@
 exception Llvm_error of string
 exception Cast_error of string
 
-type 'a error = Just of 'a | Error of string
-
 type llvm_type =
     Integer of int (* bitwidth *)
   | Double
@@ -122,22 +120,10 @@ let string_of_binop = function
   | Op_mulf -> "fmul"
   | Op_divf -> "fdiv"
 
-let rec typeof = function
+let typeof = function
     Const(_, typ) -> typ
   | Reg(_, typ) -> typ
   | Nothing -> Void
-
-let return x = Just x
-let fail x = Error x
-
-let (>>=) value fn = match value with
-  | Just value -> fn value
-  | Error s -> fail s
-
-let (+++) a b = match a, b with
-  | Just a, Just b -> return (a,b)
-  | Error e, _ -> fail e
-  | _, Error e -> fail e
 
 let reg_counter = ref 0
 let reset_counter () = reg_counter := 0
@@ -156,7 +142,7 @@ let string_of_comp typ =
       | Comp_gt -> "fcmp ogt"
       | Comp_ge -> "fcmp oge"
     end
-  | Address _ -> begin
+  | Integer _ -> begin
       function
       | Comp_eq -> "icmp  eq"
       | Comp_ne -> "icmp  ne"
@@ -165,7 +151,7 @@ let string_of_comp typ =
       | Comp_gt -> "icmp sgt"
       | Comp_ge -> "icmp sge"
     end
-  | Integer _ -> begin
+  | Address _ -> begin
       function
       | Comp_eq -> "icmp  eq"
       | Comp_ne -> "icmp  ne"
