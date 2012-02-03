@@ -93,6 +93,7 @@ let insert_debug seq desc dbg arg res typ =
 let comment seq str = ignore (insert seq (Icomment str) [||] Nothing Void)
 
 let alloca seq name typ =
+  assert (typ <> Void);
   Hashtbl.add types name (Address typ);
   insert seq Ialloca [||] (Reg(name, Address typ)) typ
 
@@ -146,7 +147,7 @@ let rec caml_type expect = function
       caml_type expect body
   | Cassign(id,expr) ->
       let typ = caml_type Any expr in
-      add_type (translate_id id) typ;
+      add_type (translate_id id) (if typ = Any || typ = Void then addr_type else typ);
       expect
   | Ctuple exprs -> ignore (List.map (caml_type Any) exprs); Any
   | Cop(Capply(typ, debug), exprs) -> ignore (List.map (caml_type Any) exprs); expect
@@ -241,7 +242,7 @@ let rec compile_instr seq instr =
       let name = translate_id id in
       let typ = get_type name in
       let res_arg = compile_instr seq arg in
-      let addr = alloca seq name typ in (* TODO check whether the variable already exists *)
+      let addr = assert (typ <> Void); alloca seq name typ in (* TODO check whether the variable already exists *)
       store seq res_arg addr typ;
       compile_instr seq body
   | Cassign(id, expr) ->
@@ -249,7 +250,7 @@ let rec compile_instr seq instr =
       let name = translate_id id in
       let value = compile_instr seq expr in
       let typ = get_type name in
-      store seq value (Const(name, typ)) (deref typ);
+      store seq value (Reg(name, typ)) (deref typ);
       Nothing
   | Ctuple [] -> Nothing
   | Ctuple exprs ->
@@ -424,7 +425,7 @@ let fundecl = function
       let foo (x, typ) =
         let typ = try Hashtbl.find types x with Not_found -> addr_type in
         let typ = if is_int typ then typ else addr_type in
-        store tmp_seq (Reg("param." ^ x, addr_type)) (alloca tmp_seq x typ) typ
+        store tmp_seq (Reg("param." ^ x, addr_type)) (assert (typ <> Void); alloca tmp_seq x typ) typ
       in
       List.iter foo args;
       let body = compile_instr tmp_seq body in

@@ -172,7 +172,7 @@ let emit_llvm instr =
 let fundecl = function { fun_name = name; fun_args = args; fun_body = body } ->
   let args = String.concat ", " (List.map string_of_reg args) in
   emit_nl ("define " ^ calling_conv ^ " " ^ string_of_type addr_type ^
-           " @" ^ name ^ "(" ^ args ^ ") nounwind gc \"ocaml\" {");
+           " @" ^ name ^ "(" ^ args ^ ") nounwind noinline gc \"ocaml\" {");
   begin
     try instr_iter emit_llvm body
     with Llvm_error s ->

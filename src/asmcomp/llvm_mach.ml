@@ -97,7 +97,7 @@ let rec string_of_type = function
   | Jump_buffer -> "%jump_buf_t"
   | Void -> "void"
   | Function(ret, args) -> string_of_type ret ^ " (" ^ String.concat ", " (List.map string_of_type args) ^ ")"
-  | Any -> (*error "unable to infer type"*) "void"
+  | Any -> (*error "unable to infer type"*) "Any"
 
 let deref typ = match typ with
   | Address typ -> typ

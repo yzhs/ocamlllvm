@@ -97,14 +97,14 @@ let cast_reg value dest_typ reg =
     | (Address _, Integer _) -> cast Ptrtoint value reg
     | (Double, Address _) -> let tmp = register "tmp" float_sized_int in cast Bitcast value tmp; cast Inttoptr tmp reg
     | (Address _, Double) -> let tmp = register "tmp" float_sized_int in cast Ptrtoint value tmp; cast Bitcast tmp reg
-    | (a, b) -> error ("error while trying to cast " ^ string_of_type typ ^
+    | (a, b) -> error ("error while trying to cast " ^ string_of_reg value ^
                        " to " ^ string_of_type dest_typ)
   end;
   if typ = dest_typ then value else reg
 
 let cast value dest_typ = cast_reg value dest_typ (register "" dest_typ)
 
-let alloca result = assert (typeof result <> Void); insert Lalloca [||] result; result
+let alloca result = assert (typeof result <> Address Void); insert Lalloca [||] result; result
 let load addr result = insert Lload [|addr|] result; result
 let branch lbl = insert_simple (Lbranch lbl)
 let label lbl = insert_simple (Llabel lbl)
@@ -179,7 +179,7 @@ let rec linear i =
         assert (typeof cond = bit);
         let counter = c () in
         let then_lbl, else_lbl, endif_lbl = "then" ^ counter, "else" ^ counter, "endif" ^ counter in
-        let if_res = if typeof res = Void then Nothing else alloca (register "if_tmp" (Address (typeof res))) in
+        let if_res = if typeof res = Void then Nothing else (assert (typeof res <> Void); alloca (register "if_tmp" (Address (typeof res)))) in
         insert (Lcondbranch(then_lbl, else_lbl)) [|cond|] Nothing;
         label then_lbl;
         linear ifso;
@@ -198,10 +198,9 @@ let rec linear i =
         print_debug "Iswitch";
         let c = c () in
         let labels = Array.map (fun i -> "case" ^ string_of_int i ^ c) indexes in (* TODO create the correct labels *)
-        let switch_res = alloca (register "" (if typ <> Void then Address typ else addr_type)) in
+        let switch_res = alloca (register "" (assert (typ <> Address Void); if typ <> Void then Address typ else addr_type)) in
         insert (Lswitch("default" ^ c, labels)) [|cast value int_type|] Nothing;
         label ("default" ^ c);
-        (* TODO throw an exception saying that the match was invalid*)
         insert Lstore [|Const("@caml_exn_Match_failure", addr_type); Const("@exn", Address addr_type)|] Nothing;
         insert (Lextcall (Const("@llvm.eh.sjlj.longjmp", Function(Void, [Address byte]))))
           [|cast (Const("@jmp_buf", Address Jump_buffer)) (Address byte)|] Nothing;
@@ -237,8 +236,6 @@ let rec linear i =
         let c = c() in
         let try_lbl, with_lbl, cont_lbl = "try" ^ c, "with" ^ c, "cont" ^ c in
         (* TODO write exception handling code *)
-        (* call setjmp *)
-        (* if setjmp returned 0 *)
         let old_jmp_buf = alloca (register "old_jmp_buf" (Address Jump_buffer)) in
         let temp_buf = load (Const("@jmp_buf", Address Jump_buffer)) (register "" Jump_buffer) in
         insert Lstore [|temp_buf; old_jmp_buf|] Nothing;
@@ -272,13 +269,15 @@ let rec linear i =
         linear body;
         let body_res = (last_instr body).Llvm_mach.res in
         if typeof body_res <> Void then insert Lstore [|cast body_res typ; tmp|] Nothing else insert_simple (Lcomment "nothing to store in body");
-        branch ("exit" ^ string_of_int i ^ c);
+        branch ("endcatch" ^ c);
         label ("exit" ^ string_of_int i ^ c);
         Hashtbl.remove exits i;
         linear handler;
         let handler_res = (last_instr handler).Llvm_mach.res in
         if typeof handler_res <> Void then insert Lstore [|cast handler_res typ; tmp|] Nothing
         else insert_simple (Lcomment "nothing to store in handler");
+        branch ("endcatch" ^ c);
+        label ("endcatch" ^ c);
         if typ <> Void then insert Lload [|tmp|] res
     | Iexit i, [||] ->
         print_debug "Iexit";
