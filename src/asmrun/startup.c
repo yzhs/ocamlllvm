@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <setjmp.h>
 #include "callback.h"
 #include "backtrace.h"
 #include "custom.h"
@@ -36,7 +37,8 @@
 #include "ui.h"
 #endif
 
-uintnat exn;
+uintnat caml_exn;
+jmp_buf caml_jump_buffer;
 extern int caml_parser_trace;
 CAMLexport header_t caml_atom_table[256];
 char * caml_code_area_start, * caml_code_area_end;

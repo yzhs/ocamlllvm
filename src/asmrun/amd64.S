@@ -350,23 +350,31 @@ FUNCTION(G(caml_start_program))
     /* Setup alloc ptr and exception ptr */
 	LOAD_VAR(caml_young_ptr, %r15)
 	LOAD_VAR(caml_exception_pointer, %r14)
-#endif
-    /* TODO figure out what to do when using LLVM */
     /* Build an exception handler */
         lea     .L108(%rip), %r13
         pushq   %r13
         pushq   %r14
         movq    %rsp, %r14
+#else
+	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
+	callq	setjmp@plt
+	testq	%rax, %rax
+	jnz	.Lfoobar /* if rax = 0 this is the first return */
+#endif
     /* Call the Caml code */
         call    *%r12
 .L107:
+#ifndef LLVM
     /* Pop the exception handler */
         popq    %r14
         popq    %r12    /* dummy register */
+#endif
 .L109:
+#ifndef LLVM
     /* Update alloc ptr and exception ptr */
 	STORE_VAR(%r15,caml_young_ptr)
 	STORE_VAR(%r14,caml_exception_pointer)
+#endif
     /* Pop the callback link, restoring the global variables */
 	POP_VAR(caml_bottom_of_stack)
         POP_VAR(caml_last_return_address)
@@ -382,14 +390,18 @@ FUNCTION(G(caml_start_program))
         popq    %rbx
     /* Return to caller. */
         ret
+.Lfoobar:
+    /* move the pointer to the exception into the first argument register */
+	movq	caml_exn@GOTPCREL(%rip), %rax
 .L108:
     /* Exception handler*/
     /* Mark the bucket as an exception result and return it */
         orq     $2, %rax
-        jmp     .L109
+	jmp	.L109
+
 
 /* Raise an exception from Caml */
-
+#ifndef LLVM
 FUNCTION(G(caml_raise_exn))
         TESTL_VAR($1, caml_backtrace_active)
         jne     .L110
@@ -407,9 +419,31 @@ FUNCTION(G(caml_raise_exn))
         movq    %r14, %rsp
         popq    %r14
         ret
+#else
+FUNCTION(G(caml_raise_exn))
+        TESTL_VAR($1, caml_backtrace_active)
+        jne     .L110
+	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
+	movq	$1, %rsi
+	callq	longjmp@plt
+.L110:
+	jmp	.L110
+	/* TODO figure out how to allow backtraces */
+        movq    %rax, %r12            /* Save exception bucket */
+        movq    %rax, %rdi            /* arg 1: exception bucket */
+        movq    0(%rsp), %rsi         /* arg 2: pc of raise */
+        leaq    8(%rsp), %rdx         /* arg 3: sp of raise */
+        movq    %r14, %rcx            /* arg 4: sp of handler */
+        call    GCALL(caml_stash_backtrace)
+        movq    %r12, %rax            /* Recover exception bucket */
+        movq    %r14, %rsp
+        popq    %r14
+        ret
+#endif
 
 /* Raise an exception from C */
 
+#ifndef LLVM
 FUNCTION(G(caml_raise_exception))
         TESTL_VAR($1, caml_backtrace_active)
         jne     .L111
@@ -430,6 +464,30 @@ FUNCTION(G(caml_raise_exception))
         popq    %r14                  /* Recover previous exception handler */
 	LOAD_VAR(caml_young_ptr,%r15)  /* Reload alloc ptr */
         ret
+#else
+FUNCTION(G(caml_raise_exception))
+        TESTL_VAR($1, caml_backtrace_active)
+        jne     .L111
+	movq	caml_exn@GOTPCREL(%rip), %rsi
+	movq	%rdi, (%rsi)
+	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
+	movq	$1, %rsi
+	callq	longjmp@plt
+.L111:
+	jmp	.L111
+	/* TODO figure out how to allow backtraces */
+        movq    %rdi, %r12            /* Save exception bucket */
+                                      /* arg 1: exception bucket */
+	LOAD_VAR(caml_last_return_address,%rsi)   /* arg 2: pc of raise */
+        LOAD_VAR(caml_bottom_of_stack,%rdx)       /* arg 3: sp of raise */
+        LOAD_VAR(caml_exception_pointer,%rcx)     /* arg 4: sp of handler */
+        call    GCALL(caml_stash_backtrace)
+        movq    %r12, %rax            /* Recover exception bucket */
+	LOAD_VAR(caml_exception_pointer,%rsp)
+        popq    %r14                  /* Recover previous exception handler */
+	LOAD_VAR(caml_young_ptr,%r15)  /* Reload alloc ptr */
+        ret
+#endif
 
 /* Callback from C to Caml */
 

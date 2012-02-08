@@ -364,9 +364,8 @@ let rec compile_instr seq instr =
       print_debug "Ctrywith";
       let try_seq = ref [] in
       let with_seq = ref [] in
-      (* TODO figure out what to do with id *)
       ignore (compile_instr try_seq try_expr);
-      ignore (insert with_seq Iload [|Const("@exn", Address addr_type)|] (Const("%" ^ translate_id id, addr_type)) addr_type);
+      ignore (insert with_seq Igetelementptr [|Const("@caml_exn", Address addr_type); Const("0", int_type)|] (Reg(translate_id id, addr_type)) addr_type);
       ignore (compile_instr with_seq with_expr);
       let try_instrs = reverse_instrs try_seq in
       let with_instrs = reverse_instrs with_seq in

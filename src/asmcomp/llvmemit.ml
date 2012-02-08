@@ -189,12 +189,18 @@ let fundecl = function { fun_name = name; fun_args = args; fun_body = body } ->
  *)
 let header =
   let addr_type = string_of_type addr_type in
+  let undef = addr_type ^ " undef" in
   [ "; vim: set ft=llvm:"
+  (*
   ; "%jump_buf_t = type [5 x " ^ addr_type ^ "]"
+  *)
+  ; "%jump_buf_t = type [25 x " ^ addr_type ^ "]"
   ; "declare double @fabs(double) nounwind"
   ; "declare void @llvm.gcroot(i8**, i8*) nounwind"
   ; "declare i32 @llvm.eh.sjlj.setjmp(i8*) nounwind"
   ; "declare void @llvm.eh.sjlj.longjmp(i8*) nounwind"
+  ; "declare void @longjmp(i8*, i32) nounwind noreturn"
+  ; "declare i32 @setjmp(i8*) nounwind returns_twice"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc1() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc2() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc3() nounwind"
@@ -206,8 +212,11 @@ let header =
   ; "@caml_young_limit = external global " ^ addr_type
   ; "@caml_bottom_of_stack = external global " ^ addr_type
   ; "@caml_last_return_address  = external global " ^ addr_type
-  ; "@exn = external global " ^ addr_type 
-  ; "@jmp_buf = external global %jump_buf_t"
+  ; "@caml_exn = external global " ^ addr_type
+(*
+  ; "@caml_jump_buffer = external global %jump_buf_t"
+ *)
+  ; "@caml_jump_buffer = external global %jump_buf_t"
   ]
 
 let constants : string list ref = ref []
