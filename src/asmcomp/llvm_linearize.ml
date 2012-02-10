@@ -137,13 +137,13 @@ let rec linear i =
         insert (Lcomp op) [|cast left typ; cast right typ|] res
     | Ialloca, [||] ->
         print_debug "Ialloca";
-        ignore (alloca res)
         (*
+        ignore (alloca res)
+        *)
         let a = alloca res in
         if is_addr (deref (typeof a)) then
           insert (Lextcall (Const("@llvm.gcroot", Function(Void, [Address (Address byte); Address byte]))))
-            [|cast a (Address (Address byte)); Const("inttoptr(i64 0 to i8* )", Address byte)|] Nothing;
-        *)
+            [|cast a (Address (Address byte)); Const("null", Address byte)|] Nothing;
     | Iload, [|addr|] ->
         print_debug "Iload";
         ignore (load (cast addr (Address typ)) res)
@@ -267,18 +267,20 @@ let rec linear i =
         label try_lbl;
         linear try_instr;
         if typeof try_res <> Void then insert Lstore [|cast try_res typ; tmp|] Nothing;
+        let temp_buf = load old_jmp_buf (register "" Jump_buffer) in
+        insert Lstore [|temp_buf; Const("@caml_jump_buffer", Address Jump_buffer)|] Nothing;
         branch cont_lbl;
 
         let with_res = (last_instr with_instr).Llvm_mach.res in
         label with_lbl;
+        let temp_buf = load old_jmp_buf (register "" Jump_buffer) in
+        insert Lstore [|temp_buf; Const("@caml_jump_buffer", Address Jump_buffer)|] Nothing;
         linear with_instr;
         if typeof with_res <> Void then insert Lstore [|cast with_res typ; tmp|] Nothing;
         branch cont_lbl;
 
         label cont_lbl;
-        if typ <> Void then insert Lload [|tmp|] res;
-        let temp_buf = load old_jmp_buf (register "" Jump_buffer) in
-        insert Lstore [|temp_buf; Const("@caml_jump_buffer", Address Jump_buffer)|] Nothing
+        if typ <> Void then insert Lload [|tmp|] res
     | Icatch(i, body, handler), [||] ->
         let c = c () in
         Hashtbl.add exits i c;
@@ -303,11 +305,8 @@ let rec linear i =
     | Ialloc len, [||] ->
         print_debug "Ialloc";
         let counter = c () in
-        let begin_lbl, collect_lbl, continue_lbl = "begin" ^ counter, "collect" ^ counter, "continue" ^ counter in
+        let collect_lbl, continue_lbl = "collect" ^ counter, "continue" ^ counter in
         insert_simple (Lcomment ("allocating " ^ string_of_int len ^ "*8 bytes"));
-        branch begin_lbl;
-
-        label begin_lbl;
         let young_limit = load caml_young_limit (register "young_limit" addr_type) in
         let young_ptr = load caml_young_ptr (register "young_ptr" addr_type) in
         let nyp = getelemptr young_ptr (Const(string_of_int (-len), int_type)) (register "" (typeof young_ptr)) in
@@ -341,6 +340,22 @@ let rec linear i =
     | _, _ -> error ("unknown instruction:\n" ^ Llvm_aux.to_string i)
   end; linear next end
 
+
+
+let move_allocas_to_entry_block instr =
+  let allocas = ref [] in
+  let rec helper prev instr =
+    match instr.desc with
+    | Lend -> !allocas
+    | Lalloca -> allocas := instr :: !allocas; prev.next <- instr.next; helper prev prev.next
+    | _ -> helper instr instr.next
+  in
+  let allocas = helper instr instr.next in
+  List.iter (fun i -> i.next <- instr.next; instr.next <- i) allocas;
+  instr
+
+
+
 let rec len instr =
   match instr.desc with
     Lend -> 0
@@ -357,7 +372,7 @@ let fundecl f =
     instr_seq := [];
     { fun_name = f.name;
       fun_args = List.map (fun (name, typ) -> Reg(name, typ)) f.args;
-      fun_body = instrs }
+      fun_body = move_allocas_to_entry_block instrs }
   with Llvm_error s ->
     print_endline ("error while linearising " ^ f.name);
     print_endline (to_string f.body);

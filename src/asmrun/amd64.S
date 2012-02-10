@@ -129,6 +129,7 @@
 FUNCTION(G(caml_call_gc))
         RECORD_STACK_FRAME(0)
 .Lcaml_call_gc:
+#ifndef LLVM
     /* Build array of registers, save it into caml_gc_regs */
         pushq   %r13
         pushq   %r12
@@ -143,12 +144,12 @@ FUNCTION(G(caml_call_gc))
         pushq   %rdi
         pushq   %rbx
         pushq   %rax
+#endif
         STORE_VAR(%rsp, caml_gc_regs)
 #ifndef LLVM
     /* Save caml_young_ptr, caml_exception_pointer */
 	STORE_VAR(%r15, caml_young_ptr)
 	STORE_VAR(%r14, caml_exception_pointer)
-#endif
     /* Save floating-point registers */
         subq    $(16*8), %rsp
         movsd   %xmm0, 0*8(%rsp)
@@ -167,13 +168,13 @@ FUNCTION(G(caml_call_gc))
         movsd   %xmm13, 13*8(%rsp)
         movsd   %xmm14, 14*8(%rsp)
         movsd   %xmm15, 15*8(%rsp)
+#endif
     /* Call the garbage collector */
         call    GCALL(caml_garbage_collection)
 #ifndef LLVM
     /* Restore caml_young_ptr, caml_exception_pointer */
 	LOAD_VAR(caml_young_ptr, %r15)
 	LOAD_VAR(caml_exception_pointer, %r14)
-#endif
     /* Restore all regs used by the code generator */
         movsd   0*8(%rsp), %xmm0
         movsd   1*8(%rsp), %xmm1
@@ -205,6 +206,7 @@ FUNCTION(G(caml_call_gc))
         popq    %rbp
         popq    %r12
         popq    %r13
+#endif
     /* Return to caller */
         ret
 
@@ -303,6 +305,8 @@ FUNCTION(G(caml_allocN))
 #endif
         jmp     .Lcaml_allocN
 
+
+#ifndef LLVM
 /* Call a C function from Caml */
 
 FUNCTION(G(caml_c_call))
@@ -311,20 +315,17 @@ FUNCTION(G(caml_c_call))
         popq    %r12
         STORE_VAR(%r12, caml_last_return_address)
         STORE_VAR(%rsp, caml_bottom_of_stack)
-#ifndef LLVM
     /* Make the exception handler and alloc ptr available to the C code */
 	STORE_VAR(%r15, caml_young_ptr)
 	STORE_VAR(%r14, caml_exception_pointer)
-#endif
     /* Call the function (address in %rax) */
         call    *%rax
-#ifndef LLVM
     /* Reload alloc ptr */
 	LOAD_VAR(caml_young_ptr, %r15)
-#endif
     /* Return to caller */
 	pushq	%r12
 	ret
+#endif
 
 /* Start the Caml program */
 
@@ -356,10 +357,12 @@ FUNCTION(G(caml_start_program))
         pushq   %r14
         movq    %rsp, %r14
 #else
+	movq	%rdi, %rbp
 	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
 	callq	setjmp@plt
 	testq	%rax, %rax
 	jnz	.Lfoobar /* if rax = 0 this is the first return */
+	movq	%rbp, %rdi
 #endif
     /* Call the Caml code */
         call    *%r12
@@ -401,8 +404,8 @@ FUNCTION(G(caml_start_program))
 
 
 /* Raise an exception from Caml */
-#ifndef LLVM
 FUNCTION(G(caml_raise_exn))
+#ifndef LLVM
         TESTL_VAR($1, caml_backtrace_active)
         jne     .L110
         movq    %r14, %rsp
@@ -420,31 +423,15 @@ FUNCTION(G(caml_raise_exn))
         popq    %r14
         ret
 #else
-FUNCTION(G(caml_raise_exn))
-        TESTL_VAR($1, caml_backtrace_active)
-        jne     .L110
 	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
 	movq	$1, %rsi
 	callq	longjmp@plt
-.L110:
-	jmp	.L110
-	/* TODO figure out how to allow backtraces */
-        movq    %rax, %r12            /* Save exception bucket */
-        movq    %rax, %rdi            /* arg 1: exception bucket */
-        movq    0(%rsp), %rsi         /* arg 2: pc of raise */
-        leaq    8(%rsp), %rdx         /* arg 3: sp of raise */
-        movq    %r14, %rcx            /* arg 4: sp of handler */
-        call    GCALL(caml_stash_backtrace)
-        movq    %r12, %rax            /* Recover exception bucket */
-        movq    %r14, %rsp
-        popq    %r14
-        ret
 #endif
 
 /* Raise an exception from C */
 
-#ifndef LLVM
 FUNCTION(G(caml_raise_exception))
+#ifndef LLVM
         TESTL_VAR($1, caml_backtrace_active)
         jne     .L111
         movq    %rdi, %rax
@@ -465,28 +452,11 @@ FUNCTION(G(caml_raise_exception))
 	LOAD_VAR(caml_young_ptr,%r15)  /* Reload alloc ptr */
         ret
 #else
-FUNCTION(G(caml_raise_exception))
-        TESTL_VAR($1, caml_backtrace_active)
-        jne     .L111
 	movq	caml_exn@GOTPCREL(%rip), %rsi
 	movq	%rdi, (%rsi)
 	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
 	movq	$1, %rsi
 	callq	longjmp@plt
-.L111:
-	jmp	.L111
-	/* TODO figure out how to allow backtraces */
-        movq    %rdi, %r12            /* Save exception bucket */
-                                      /* arg 1: exception bucket */
-	LOAD_VAR(caml_last_return_address,%rsi)   /* arg 2: pc of raise */
-        LOAD_VAR(caml_bottom_of_stack,%rdx)       /* arg 3: sp of raise */
-        LOAD_VAR(caml_exception_pointer,%rcx)     /* arg 4: sp of handler */
-        call    GCALL(caml_stash_backtrace)
-        movq    %r12, %rax            /* Recover exception bucket */
-	LOAD_VAR(caml_exception_pointer,%rsp)
-        popq    %r14                  /* Recover previous exception handler */
-	LOAD_VAR(caml_young_ptr,%r15)  /* Reload alloc ptr */
-        ret
 #endif
 
 /* Callback from C to Caml */
@@ -501,9 +471,13 @@ FUNCTION(G(caml_callback_exn))
         pushq   %r15
 	subq	$8, %rsp	/* stack 16-aligned */
     /* Initial loading of arguments */
+#ifndef LLVM
         movq    %rdi, %rbx      /* closure */
         movq    %rsi, %rax      /* argument */
         movq    0(%rbx), %r12   /* code pointer */
+#else
+	movq	0(%rdi), %r12
+#endif
         jmp     .Lcaml_start_program
 
 FUNCTION(G(caml_callback2_exn))
@@ -516,9 +490,11 @@ FUNCTION(G(caml_callback2_exn))
         pushq   %r15
 	subq	$8, %rsp	/* stack 16-aligned */
     /* Initial loading of arguments */
+#ifndef LLVM
         /* closure stays in %rdi */
         movq    %rsi, %rax               /* first argument */
         movq    %rdx, %rbx               /* second argument */
+#endif
         leaq    GCALL(caml_apply2)(%rip), %r12  /* code pointer */
         jmp     .Lcaml_start_program
 
@@ -532,20 +508,28 @@ FUNCTION(G(caml_callback3_exn))
         pushq   %r15
 	subq	$8, %rsp	/* stack 16-aligned */
     /* Initial loading of arguments */
+#ifndef LLVM
         movq    %rsi, %rax               /* first argument */
         movq    %rdx, %rbx               /* second argument */
         movq    %rdi, %rsi               /* closure */
         movq    %rcx, %rdi               /* third argument */
+#endif
         leaq    GCALL(caml_apply3)(%rip), %r12  /* code pointer */
         jmp     .Lcaml_start_program
 
 FUNCTION(G(caml_ml_array_bound_error))
 #ifndef LLVM
         leaq    GCALL(caml_array_bound_error)(%rip), %rax
-#else
-        leaq    GCALL(caml_array_bound_error)(%rip), %rdi
-#endif
         jmp     .Lcaml_c_call
+#else
+        popq    %r12
+        STORE_VAR(%r12, caml_last_return_address)
+        STORE_VAR(%rsp, caml_bottom_of_stack)
+        leaq    GCALL(caml_array_bound_error)(%rip), %r11
+        call    *%r11
+	pushq	%r12
+	ret
+#endif
 
         .data
         .globl  G(caml_system__frametable)
@@ -562,6 +546,7 @@ G(caml_system__frametable):
 #else
 	.section    .rodata.cst8,"a",@progbits
 #endif
+#ifndef LLVM
         .globl  G(caml_negf_mask)
         .align  SIXTEEN_ALIGN
 G(caml_negf_mask):
@@ -570,6 +555,7 @@ G(caml_negf_mask):
         .align  SIXTEEN_ALIGN
 G(caml_absf_mask):
 	.quad	0x7FFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF
+#endif
 
 #if defined(SYS_linux)
     /* Mark stack as non-executable, PR#4564 */
