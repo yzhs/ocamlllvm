@@ -396,6 +396,7 @@ FUNCTION(G(caml_start_program))
 .Lfoobar:
     /* move the pointer to the exception into the first argument register */
 	movq	caml_exn@GOTPCREL(%rip), %rax
+	movq	(%rax), %rax
 .L108:
     /* Exception handler*/
     /* Mark the bucket as an exception result and return it */
