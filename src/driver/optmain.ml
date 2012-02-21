@@ -159,7 +159,7 @@ module Options = Main_args.Make_optcomp_options (struct
   let _dscheduling = set dump_scheduling
   let _dlinear = set dump_linear
   let _dstartup = set keep_startup_file
-  let _llvm = set use_llvm
+  let _llvm = clear use_llvm
 
   let anonymous = anonymous
 end);;

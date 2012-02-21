@@ -90,12 +90,19 @@ let insert_debug seq desc dbg arg res typ =
   seq := (desc, arg, res, typ, dbg) :: !seq;
   res
 
+let add_type name typ =
+  Hashtbl.replace types name typ
+
+let rec strip_addrs = function
+  | Address (Address _ as typ) -> strip_addrs typ
+  | typ -> typ
+
 let comment seq str = ignore (insert seq (Icomment str) [||] Nothing Void)
 
 let alloca seq name typ =
   assert (typ <> Void);
-  Hashtbl.add types name (Address typ);
-  insert seq Ialloca [||] (Reg(name, Address typ)) typ
+  add_type name (strip_addrs (Address typ));
+  insert seq Ialloca [||] (Reg(name, strip_addrs (Address typ))) (deref (strip_addrs (Address typ)))
 
 let load seq arg reg typ = insert seq Iload [|arg|] (register reg typ) typ
 let store seq value addr typ = ignore (insert seq Istore [|value; addr|] Nothing typ)
@@ -121,14 +128,15 @@ let getelemptr seq addr offset typ =
   insert seq Igetelementptr [|addr; offset|] (register "" (typeof addr)) typ
 (* }}} *)
 
-let add_type name typ =
-  Hashtbl.add types name typ
+let is_function = function
+  | Function(_,_) | Address(Function(_,_)) -> true
+  | _ -> false
 
 (* very simple type inference algorithm used to determine which type an
  * identifier has *)
 (* {{{ *)
 let rec caml_type expect = function
-  | Cconst_int _ -> int_type
+  | Cconst_int _ -> addr_type
   | Cconst_natint _ -> int_type
   | Cconst_float _ -> Double
   | Cconst_symbol _ -> addr_type
@@ -142,7 +150,7 @@ let rec caml_type expect = function
   | Clet(id,arg,body) ->
       let name = translate_id id in
       let typ = caml_type Any arg in
-      if not (Hashtbl.mem types name) then
+      if not (Hashtbl.mem types name) || not (is_function (get_type name)) then
         add_type name (if typ = Any || typ = Void then addr_type else typ);
       caml_type expect body
   | Cassign(id,expr) ->
@@ -189,9 +197,14 @@ let rec caml_type expect = function
   | Csequence(fst,snd) -> ignore (caml_type Any fst); caml_type expect snd
   | Cifthenelse(cond, expr1, expr2) ->
       ignore (caml_type int_type cond);
-      let typ = caml_type Any expr1 in caml_type typ expr2
-  | Cswitch(expr,is,exprs) -> Array.iter (fun x -> ignore (caml_type expect x)) exprs; expect (* TODO figure out the real type *)
-  | Cloop expr -> ignore (caml_type Any expr); Void
+      let typ = caml_type expect expr1 in
+      let typ2 = caml_type (if typ <> Void then typ else expect) expr2 in
+      if typ <> Void then typ else typ2
+  | Cswitch(expr,is,exprs) ->
+      let typ = ref Void in
+      Array.iter (fun x -> let t = caml_type expect x in if t <> Void then typ := t) exprs;
+      !typ
+  | Cloop expr -> ignore (caml_type Void expr); Void
   | Ccatch(i,ids,expr1,expr2) ->
       ignore (caml_type expect expr1);
       ignore (caml_type expect expr2);
@@ -281,18 +294,19 @@ let rec compile_instr seq instr =
   | Cop(Calloc, args) -> (* TODO figure out how much space a single element needs *)
       print_debug "Calloc";
       let args = List.map (compile_instr seq) args in
-      let ptr = alloc seq (List.length args) "alloc" addr_type in
-      let header = getelemptr seq ptr (Const("1", int_type)) addr_type in
+      let alloc = alloc seq (List.length args) "alloc" addr_type in
+      let alloc = getelemptr seq alloc (Const("1", int_type)) addr_type in
       let num = ref (-1) in
       let emit_arg elem =
         let counter = string_of_int !num in
-        let elemptr = getelemptr seq header (Const(counter, int_type)) addr_type in
+        let elemptr = getelemptr seq alloc (Const(counter, int_type)) addr_type in
         num := !num + 1;
-        ignore (insert seq Istore [|elem; elemptr|] ptr (typeof elem))
-        (*store seq elem elemptr (typeof elem)*)
+        (* The store itself returns [Nothing] but the enclosing blocks result is
+        * [alloc].                                  vvvvv                     *)
+        ignore (insert seq Istore [|elem; elemptr|] alloc (typeof elem))
       in
       List.iter emit_arg args;
-      header
+      alloc
   | Cop(Cstore mem, [addr; value]) ->
       print_debug "Cstore";
       store seq (compile_instr seq value) (compile_instr seq addr) (translate_mem mem);

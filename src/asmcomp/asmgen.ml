@@ -114,7 +114,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
     begin_assembly();
     Closure.intro size lam
     ++ Cmmgen.compunit size
-    ++ List.map (fun x -> Llvmcompile.read_function x; x) (* TODO only do this when compiling using LLVm *)
+    ++ List.map (fun x -> if !use_llvm then Llvmcompile.read_function x; x)
     ++ List.iter (compile_phrase ppf) ++ (fun () -> ());
     (match toplevel with None -> () | Some f -> compile_genfuns ppf f);
 
@@ -139,11 +139,11 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
   end;
   let temp1 =
     if !Clflags.keep_asm_file then prefixname ^ ".opt" ^ ext_llvm
-    else Filename.temp_file (prefixname ^ ".opt") ext_llvm
+    else Filename.temp_dir_name ^ "/" ^ Filename.basename prefixname ^ ext_llvm
   in
   let temp2 =
     if !Clflags.keep_asm_file then prefixname ^ ext_asm
-    else Filename.temp_file prefixname ext_asm
+    else Filename.temp_dir_name ^ "/" ^ Filename.basename prefixname ^ ext_asm
   in
   let assemble = if !use_llvm then Llvmcompile.assemble_file temp1 temp2 else Proc.assemble_file in
   if assemble asmfile (prefixname ^ ext_obj) <> 0

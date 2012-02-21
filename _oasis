@@ -41,7 +41,7 @@ Executable ocamlllvm
   MainIs: ocamlllvm.ml
 #  CSources: jitrun/camlnat.h, jitrun/jit.c, jitrun/str.c
   BuildDepends: dynlink, findlib (>= 1.2.7)
-  CompiledObject: byte
+  CompiledObject: native
 
 #Executable test
 #  Path: tests

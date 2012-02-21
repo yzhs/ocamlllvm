@@ -358,7 +358,7 @@ FUNCTION(G(caml_start_program))
         movq    %rsp, %r14
 #else
 	movq	%rdi, %rbp
-	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
+	movq	GREL(caml_jump_buffer)(%rip), %rdi
 	callq	setjmp@plt
 	testq	%rax, %rax
 	jnz	.Lfoobar /* if rax = 0 this is the first return */
@@ -395,7 +395,7 @@ FUNCTION(G(caml_start_program))
         ret
 .Lfoobar:
     /* move the pointer to the exception into the first argument register */
-	movq	caml_exn@GOTPCREL(%rip), %rax
+	movq	GREL(caml_exn)(%rip), %rax
 	movq	(%rax), %rax
 .L108:
     /* Exception handler*/
@@ -424,7 +424,7 @@ FUNCTION(G(caml_raise_exn))
         popq    %r14
         ret
 #else
-	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
+	movq	GREL(caml_jump_buffer)(%rip), %rdi
 	movq	$1, %rsi
 	callq	longjmp@plt
 #endif
@@ -453,9 +453,9 @@ FUNCTION(G(caml_raise_exception))
 	LOAD_VAR(caml_young_ptr,%r15)  /* Reload alloc ptr */
         ret
 #else
-	movq	caml_exn@GOTPCREL(%rip), %rsi
+	movq	GREL(caml_exn)(%rip), %rsi
 	movq	%rdi, (%rsi)
-	movq	caml_jump_buffer@GOTPCREL(%rip), %rdi
+	movq	GREL(caml_jump_buffer)(%rip), %rdi
 	movq	$1, %rsi
 	callq	longjmp@plt
 #endif

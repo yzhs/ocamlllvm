@@ -104,7 +104,21 @@ let cast_reg value dest_typ reg =
 
 let cast value dest_typ = cast_reg value dest_typ (register "" dest_typ)
 
-let alloca result = assert (typeof result <> Address Void); insert Lalloca [||] result; result
+let allocas : (string, instruction) Hashtbl.t = Hashtbl.create 10
+
+let alloca result =
+  assert (typeof result <> Address Void);
+  if Hashtbl.mem allocas (reg_name result) then begin
+    insert_simple (Lcomment "stripped an alloca, using the one with the same name already existing");
+    Const(reg_name result, typeof (Hashtbl.find allocas (reg_name result)).res)
+  end else begin
+    Hashtbl.add allocas (reg_name result) {desc = Lalloca; next = end_instr; arg = [||]; res = result; dbg = Debuginfo.none};
+    if is_addr (deref (typeof result)) then
+      insert (Lextcall (Const("@llvm.gcroot", Function(Void, [Address (Address byte); Address byte]))))
+        [|cast result (Address (Address byte)); Const("null", Address byte)|] Nothing;
+    result
+  end
+
 let load addr result = insert Lload [|addr|] result; result
 let branch lbl = insert_simple (Lbranch lbl)
 let label lbl = insert_simple (Llabel lbl)
@@ -137,13 +151,7 @@ let rec linear i =
         insert (Lcomp op) [|cast left typ; cast right typ|] res
     | Ialloca, [||] ->
         print_debug "Ialloca";
-        (*
         ignore (alloca res)
-        *)
-        let a = alloca res in
-        if is_addr (deref (typeof a)) then
-          insert (Lextcall (Const("@llvm.gcroot", Function(Void, [Address (Address byte); Address byte]))))
-            [|cast a (Address (Address byte)); Const("null", Address byte)|] Nothing;
     | Iload, [|addr|] ->
         print_debug "Iload";
         ignore (load (cast addr (Address typ)) res)
@@ -186,17 +194,16 @@ let rec linear i =
         insert (Lcondbranch(then_lbl, else_lbl)) [|cond|] Nothing;
         label then_lbl;
         linear ifso;
-        if typeof (last_instr ifso).Llvm_mach.res = Void then ()
-        else insert Lstore [|cast (last_instr ifso).Llvm_mach.res (typeof res); if_res|] Nothing;
+        if typeof (last_instr ifso).Llvm_mach.res <> Void
+        then insert Lstore [|cast (last_instr ifso).Llvm_mach.res (typeof res); cast if_res (Address (typeof res))|] Nothing;
         branch endif_lbl;
         label else_lbl;
         linear ifnot;
-        if typeof (last_instr ifnot).Llvm_mach.res = Void then ()
-        else insert Lstore [|cast (last_instr ifnot).Llvm_mach.res (typeof res); if_res|] Nothing;
+        if typeof (last_instr ifnot).Llvm_mach.res <> Void
+        then insert Lstore [|cast (last_instr ifnot).Llvm_mach.res (typeof res); cast if_res (Address (typeof res))|] Nothing;
         branch endif_lbl;
         label endif_lbl;
-        if typeof res = Void then ()
-        else insert Lload [|if_res|] res
+        if typeof res <> Void then insert Lload [|cast if_res (Address (typeof res))|] res
     | Iswitch(indexes, blocks), [|value|] ->
         print_debug "Iswitch";
         let c = c () in
@@ -215,11 +222,12 @@ let rec linear i =
           (fun i block ->
              label ("case" ^ string_of_int i ^ c);
              linear block;
-             if typ <> Void then
+             if typ <> Void then begin
                let res = (last_instr block).Llvm_mach.res in
                if typeof res <> Void then
-               insert Lstore [|cast (last_instr block).Llvm_mach.res typ; switch_res|] Nothing;
-             branch ("endswitch" ^ c);
+                 insert Lstore [|cast (last_instr block).Llvm_mach.res typ; switch_res|] Nothing
+             end;
+             branch ("endswitch" ^ c)
           ) blocks;
         label ("endswitch" ^ c);
         insert Lload [|switch_res|] res
@@ -341,25 +349,27 @@ let rec linear i =
   end; linear next end
 
 
-
-let move_allocas_to_entry_block instr =
-  let allocas = ref [] in
-  let rec helper prev instr =
-    match instr.desc with
-    | Lend -> !allocas
-    | Lalloca -> allocas := instr :: !allocas; prev.next <- instr.next; helper prev prev.next
-    | _ -> helper instr instr.next
-  in
-  let allocas = helper instr instr.next in
-  List.iter (fun i -> i.next <- instr.next; instr.next <- i) allocas;
-  instr
-
-
-
 let rec len instr =
   match instr.desc with
     Lend -> 0
   | _ -> 1 + len instr.next
+
+
+let insert_allocas allocas instrs =
+  let instr = ref instrs.next in
+  let insert_alloca a =
+    a.next <- !instr;
+    instr := a;
+  in
+  List.iter insert_alloca allocas;
+  !instr
+
+let get_allocas () =
+  (* Hashtbl.fold : ('a -> 'b -> 'c -> 'c) -> ('a, 'b) t -> 'c -> 'c *)
+  let result = Hashtbl.fold (fun _ b c -> b :: c) allocas [] in
+  Hashtbl.clear allocas;
+  result
+
 
 let fundecl f =
   try
@@ -372,7 +382,7 @@ let fundecl f =
     instr_seq := [];
     { fun_name = f.name;
       fun_args = List.map (fun (name, typ) -> Reg(name, typ)) f.args;
-      fun_body = move_allocas_to_entry_block instrs }
+      fun_body = insert_allocas (get_allocas()) instrs }
   with Llvm_error s ->
     print_endline ("error while linearising " ^ f.name);
     print_endline (to_string f.body);

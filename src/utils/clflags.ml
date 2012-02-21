@@ -78,7 +78,7 @@ let dump_combine = ref false            (* -dcombine *)
 
 let native_code = ref false             (* set to true under ocamlopt *)
 let inline_threshold = ref 10
-let use_llvm = ref false                (* -llvm *)
+let use_llvm = ref true                 (* -llvm *)
 
 let dont_write_files = ref false        (* set to true under ocamldoc *)
 

@@ -3,10 +3,10 @@
 #<src/*/*.mlp>: process_mlp
 
 # OASIS_START
-# DO NOT EDIT (digest: 3ffc46df62a60cbbfb46eaf06d424c39)
+# DO NOT EDIT (digest: 7a621d6363b4c54cd85bdfaa6aa08ff0)
 # Executable ocamlllvm
-"src/ocamlllvm.byte": pkg_findlib
-"src/ocamlllvm.byte": pkg_dynlink
+"src/ocamlllvm.native": pkg_findlib
+"src/ocamlllvm.native": pkg_dynlink
 <src/*.ml{,i}>: pkg_findlib
 <src/*.ml{,i}>: pkg_dynlink
 # OASIS_STOP

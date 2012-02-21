@@ -63,6 +63,8 @@ let translate_comp typ =
 let print_array f arr =
   String.concat ", " (Array.to_list (Array.map f arr))
 
+(* Produce a verbose representation of an Instruktion. Used to produce debugging
+* output in case something goes wrong when generating LLVM IR. *)
 let to_string instr = begin
   let res = instr.res in
   match instr.desc with
@@ -95,17 +97,17 @@ let emit_op reg op typ args =
   emit_instr (reg_name reg ^ " = " ^ op ^ " " ^ string_of_type typ ^ " " ^
               String.concat ", " (List.map reg_name args))
 
-let arg_list args =
-  String.concat ", " (List.map string_of_reg args)
+let arg_list args = String.concat ", " (List.map string_of_reg args)
 
 let emit_cast reg op value typ =
   emit_instr (reg_name reg ^ " = " ^ op ^ " " ^ string_of_reg value ^ " to " ^
               string_of_type (typeof reg))
 
 let rec instr_iter f instr =
-  match instr.desc with
-    Lend -> ()
-  | _ -> f instr; instr_iter f instr.next
+  if instr.desc <> Lend then begin
+    f instr;
+    instr_iter f instr.next
+  end
 
 let emit_call res cc fn args =
   let fn = " " ^ reg_name fn ^ "(" ^ print_array string_of_reg args ^ ") nounwind" in
@@ -113,8 +115,8 @@ let emit_call res cc fn args =
               cc ^ " " ^ (if res <> Nothing then string_of_type (typeof res) else "void") ^ fn)
 
 let emit_llvm instr =
-  let { desc = desc; next = next; arg = arg; res = res; dbg = dbg } = instr in begin
-  match desc, arg, res with
+  let { desc = desc; next = next; arg = arg; res = res; dbg = dbg } = instr in
+  begin match desc, arg, res with
     Lend, _, _ -> ()
   | Lop op, [|left; right|], Reg(_, typ) ->
       emit_op res (string_of_binop op) typ [left; right]
@@ -124,14 +126,13 @@ let emit_llvm instr =
       emit_cast res (string_of_cast op) value typ
   | Lalloca, [||], Reg(_, typ) ->
       emit_instr (reg_name res ^ " = alloca " ^ string_of_type (try deref typ with Cast_error s -> error "dereferencing result type of Lalloca failed"))
-  | Lload, [|addr|], Reg(_, typ) -> emit_op res "load" (typeof addr) [addr]
-  | Lload, [|addr|], Const(_, typ) -> emit_op res "load" (typeof addr) [addr]
+  | Lload, [|addr|], Reg(_, _) -> emit_op res "load" (typeof addr) [addr]
   | Lstore, [|value; addr|], Nothing ->
       emit_instr ("store " ^ arg_list [value; addr])
-  | Lgetelemptr, [|addr; offset|], Reg(_, typ) ->
+  | Lgetelemptr, [|addr; offset|], Reg(_, _) ->
       emit_instr (reg_name res ^ " = getelementptr " ^ arg_list [addr; offset])
-  | Lfptosi, [|value|], Reg(name, typ) -> emit_cast res "fptosi" value typ
-  | Lsitofp, [|value|], Reg(name, typ) -> emit_cast res "sitofp" value typ
+  | Lfptosi, [|value|], Reg(_, typ) -> emit_cast res "fptosi" value typ
+  | Lsitofp, [|value|], Reg(_, typ) -> emit_cast res "sitofp" value typ
   | Lcall fn, args, _ -> emit_call res calling_conv fn args
   | Lextcall fn, args, _ -> emit_call res "ccc" fn args
   | Llabel name, [||], Nothing -> emit_label name
@@ -189,7 +190,6 @@ let fundecl = function { fun_name = name; fun_args = args; fun_body = body } ->
  *)
 let header =
   let addr_type = string_of_type addr_type in
-  let undef = addr_type ^ " undef" in
   [ "; vim: set ft=llvm:"
   (*
   ; "%jump_buf_t = type [5 x " ^ addr_type ^ "]"
@@ -207,7 +207,7 @@ let header =
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_allocN(" ^ addr_type ^ ") nounwind"
   ; "declare void @caml_ml_array_bound_error() nounwind"
   ; "declare void @caml_call_gc() nounwind"
-  ; "@caml_exception_pointer = external global " ^ addr_type
+(*  ; "@caml_exception_pointer = external global " ^ addr_type*)
   ; "@caml_young_ptr = external global " ^ addr_type
   ; "@caml_young_limit = external global " ^ addr_type
   ; "@caml_bottom_of_stack = external global " ^ addr_type
@@ -245,7 +245,11 @@ let emit_function_declarations () =
   List.iter fn (List.filter (fun (_, _, name, _) -> not (List.mem name (List.map fst !local_functions))) !functions)
 
 let emit_constant_declarations () =
-  List.iter (fun name -> if List.mem name (List.map (fun (_,_,x,_) -> x) !functions) then () else emit_nl ("@" ^ name ^ " = external global " ^ string_of_type int_type)) !constants
+  List.iter (fun name ->
+                if not (List.mem name (List.map (fun (_,_,x,_) -> x) !functions)) &&
+                   not (List.mem name (List.map fst !local_functions)) then
+                  emit_nl ("@" ^ name ^ " = external global " ^ string_of_type int_type))
+    !constants
 
 
 (* Emission of data *)

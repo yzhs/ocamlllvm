@@ -110,7 +110,7 @@ void caml_init_frame_descriptors(void)
     d = (frame_descr *)(tbl + 1);
     for (j = 0; j < len; j++) {
       h = Hash_retaddr(d->retaddr);
-      while (caml_frame_descriptors[h] != NULL) {
+      while (caml_frame_descriptors[h] != NULL) { // infitine loop
         h = (h+1) & caml_frame_descriptors_mask;
       }
       caml_frame_descriptors[h] = d;
