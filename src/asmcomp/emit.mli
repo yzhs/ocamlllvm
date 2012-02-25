@@ -14,6 +14,8 @@
 
 (* Generation of assembly code *)
 
+val macosx: bool
+val emit_symbol: string -> unit
 val fundecl: Linearize.fundecl -> unit
 val data: Cmm.data_item list -> unit
 val begin_assembly: unit -> unit

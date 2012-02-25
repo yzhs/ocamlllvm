@@ -350,9 +350,9 @@ let rec compile_instr seq instr =
       insert seq (Iswitch(indices, blocks)) [|value|] (register "switch" typ) typ
   | Cloop expr ->
       print_debug "Cloop";
-      let seq = ref [] in
-      ignore (compile_instr seq expr);
-      insert seq (Iloop (reverse_instrs seq)) [||] Nothing Void
+      let lseq = ref [] in
+      ignore (compile_instr lseq expr);
+      insert seq (Iloop (reverse_instrs lseq)) [||] Nothing Void
   | Ccatch(i, ids, body, handler) ->
       print_debug "Ccatch";
       let fn id =

@@ -111,7 +111,7 @@ let rec instr_iter f instr =
 
 let emit_call res cc fn args =
   let fn = " " ^ reg_name fn ^ "(" ^ print_array string_of_reg args ^ ") nounwind" in
-  emit_instr ((if res <> Nothing then reg_name res ^ " = " else "") ^ "call " ^
+  emit_instr ((if res <> Nothing then reg_name res ^ " = " else "") ^ "tail call " ^
               cc ^ " " ^ (if res <> Nothing then string_of_type (typeof res) else "void") ^ fn)
 
 let emit_llvm instr =
@@ -192,30 +192,32 @@ let header =
   let addr_type = string_of_type addr_type in
   [ "; vim: set ft=llvm:"
   (*
+  (* This is for using the builtin sjlj exception handling *)
   ; "%jump_buf_t = type [5 x " ^ addr_type ^ "]"
+  ; "declare i32 @llvm.eh.sjlj.setjmp(i8* ) nounwind"
+  ; "declare void @llvm.eh.sjlj.longjmp(i8* ) nounwind"
   *)
+  (* This is for the libc sjlj exception handling *)
   ; "%jump_buf_t = type [25 x " ^ addr_type ^ "]"
-  ; "declare double @fabs(double) nounwind"
-  ; "declare void @llvm.gcroot(i8**, i8*) nounwind"
-  ; "declare i32 @llvm.eh.sjlj.setjmp(i8*) nounwind"
-  ; "declare void @llvm.eh.sjlj.longjmp(i8*) nounwind"
   ; "declare void @longjmp(i8*, i32) nounwind noreturn"
   ; "declare i32 @setjmp(i8*) nounwind returns_twice"
+
+  ; "declare double @fabs(double) nounwind"
+  ; "declare void @llvm.gcroot(i8**, i8*) nounwind"
+  (*
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc1() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc2() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc3() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_allocN(" ^ addr_type ^ ") nounwind"
+  *)
   ; "declare void @caml_ml_array_bound_error() nounwind"
   ; "declare void @caml_call_gc() nounwind"
-(*  ; "@caml_exception_pointer = external global " ^ addr_type*)
+
   ; "@caml_young_ptr = external global " ^ addr_type
   ; "@caml_young_limit = external global " ^ addr_type
   ; "@caml_bottom_of_stack = external global " ^ addr_type
   ; "@caml_last_return_address  = external global " ^ addr_type
   ; "@caml_exn = external global " ^ addr_type
-(*
-  ; "@caml_jump_buffer = external global %jump_buf_t"
- *)
   ; "@caml_jump_buffer = external global %jump_buf_t"
   ]
 
@@ -254,17 +256,8 @@ let emit_constant_declarations () =
 
 (* Emission of data *)
 
-let macosx =
-  match Config.system with
-  | "macosx" -> true
-  | _ -> false
-
-let emit_symbol s =
-  if macosx then emit_string "_";
-  Emitaux.emit_symbol '$' s
-
 let emit_align n =
-    let n = if macosx then Misc.log2 n else n in
+  let n = if macosx then Misc.log2 n else n in
   emit_string "module asm \"        .align  "; emit_int n; emit_string "\"\n"
 
 let emit_string_literal s =

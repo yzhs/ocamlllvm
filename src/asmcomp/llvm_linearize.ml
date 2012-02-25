@@ -307,6 +307,14 @@ let rec linear i =
         branch ("endcatch" ^ c);
         label ("endcatch" ^ c);
         if typ <> Void then insert Lload [|tmp|] res
+    | Iloop body, [||] ->
+        print_debug "Iloop";
+        let lbl = "loop" ^ c() in
+        branch lbl;
+
+        label lbl;
+        linear body;
+        branch lbl
     | Iexit i, [||] ->
         print_debug "Iexit";
         branch ("exit" ^ string_of_int i ^ Hashtbl.find exits i)
