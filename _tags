@@ -3,7 +3,20 @@
 #<src/*/*.mlp>: process_mlp
 
 # OASIS_START
-# DO NOT EDIT (digest: 7a621d6363b4c54cd85bdfaa6aa08ff0)
+# DO NOT EDIT (digest: 07d21b1350eb56096d1bbcc0507aa988)
+# Ignore VCS directories, you can use the same kind of rule outside 
+# OASIS_START/STOP if you want to exclude directories that contains 
+# useless stuff for the build process
+<**/.svn>: -traverse
+<**/.svn>: not_hygienic
+".bzr": -traverse
+".bzr": not_hygienic
+".hg": -traverse
+".hg": not_hygienic
+".git": -traverse
+".git": not_hygienic
+"_darcs": -traverse
+"_darcs": not_hygienic
 # Executable ocamlllvm
 "src/ocamlllvm.native": pkg_findlib
 "src/ocamlllvm.native": pkg_dynlink

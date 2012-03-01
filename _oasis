@@ -4,7 +4,7 @@ Version:      0.1
 OCamlVersion: >= 3.12.1
 LicenseFile:  LICENSE
 License:      QPL
-BuildType:    ocamlbuild (0.2)
+BuildType:    ocamlbuild (0.3)
 Authors:
   Benedikt Meurer <benedikt.meurer@googlemail.com>,
   Marcell Fischbach <marcellfischbach@googlemail.com>
@@ -15,7 +15,7 @@ Copyrights:
   (c) 2011 University of Siegen
 FilesAB:      src/utils/config.ml.ab
 Homepage:     http://benediktmeurer.de/ocamlnat
-Plugins:      DevFiles (0.2), StdFiles (0.2)
+Plugins:      DevFiles (0.3), StdFiles (0.3)
 BuildTools:   ocamlbuild
 
 Synopsis:     A native toplevel for the OCaml language
