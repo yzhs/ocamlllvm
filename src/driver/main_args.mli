@@ -147,19 +147,7 @@ module type Optcomp_options = sig
   val _drawlambda : unit -> unit
   val _dlambda : unit -> unit
   val _dcmm : unit -> unit
-  val _dsel : unit -> unit
-  val _dcombine : unit -> unit
-  val _dlive : unit -> unit
-  val _dspill : unit -> unit
-  val _dsplit : unit -> unit
-  val _dinterf : unit -> unit
-  val _dprefer : unit -> unit
-  val _dalloc : unit -> unit
-  val _dreload : unit -> unit
-  val _dscheduling :  unit -> unit
-  val _dlinear :  unit -> unit
   val _dstartup :  unit -> unit
-  val _llvm :  unit -> unit
 
   val anonymous : string -> unit
 end;;
@@ -190,19 +178,7 @@ module type Opttop_options = sig
   val _drawlambda : unit -> unit
   val _dlambda : unit -> unit
   val _dcmm : unit -> unit
-  val _dsel : unit -> unit
-  val _dcombine : unit -> unit
-  val _dlive : unit -> unit
-  val _dspill : unit -> unit
-  val _dsplit : unit -> unit
-  val _dinterf : unit -> unit
-  val _dprefer : unit -> unit
-  val _dalloc : unit -> unit
-  val _dreload : unit -> unit
-  val _dscheduling :  unit -> unit
-  val _dlinear :  unit -> unit
   val _dstartup :  unit -> unit
-  val _llvm :  unit -> unit
 
   val anonymous : string -> unit
 end;;

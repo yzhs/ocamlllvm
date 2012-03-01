@@ -252,7 +252,7 @@ let tag_offset =
   if big_endian then -1 else -size_int
 
 let get_tag ptr =
-  if Proc.word_addressed then           (* If byte loads are slow *)
+  if Arch.word_addressed then           (* If byte loads are slow *)
     Cop(Cand, [header ptr; Cconst_int 255])
   else                                  (* If byte loads are efficient *)
     Cop(Cload Byte_unsigned,

@@ -209,7 +209,7 @@ let make_startup_file ppf filename units_list =
   compile_phrase (Cmmgen.entry_point name_list);
   let units = List.map (fun (info,_,_) -> info) units_list in
   let tmp = Cmmgen.generic_functions false units in
-  List.iter Llvmcompile.read_function tmp;
+  List.iter Asmgen.read_function tmp;
   List.iter compile_phrase tmp;
   Array.iter
     (fun name -> compile_phrase (Cmmgen.predef_exception name))
@@ -321,10 +321,9 @@ let link ppf objfiles output_name =
     units_tolink;
   Clflags.ccobjs := !Clflags.ccobjs @ !lib_ccobjs;
   Clflags.ccopts := !lib_ccopts @ !Clflags.ccopts; (* put user's opts first *)
-  let suffix = if !Clflags.use_llvm then ext_llvm else ext_asm in
   let startup =
-    if !Clflags.keep_startup_file then output_name ^ ".startup" ^ suffix
-    else Filename.temp_file "camlstartup" suffix in
+    if !Clflags.keep_startup_file then output_name ^ ".startup" ^ ext_llvm
+    else Filename.temp_file "camlstartup" ext_llvm in
   make_startup_file ppf startup units_tolink;
   let startup_obj = Filename.temp_file "camlstartup" ext_obj in
   let temp1 =
@@ -335,12 +334,8 @@ let link ppf objfiles output_name =
     if !Clflags.keep_startup_file then output_name ^ ".startup" ^ ext_asm
     else Filename.temp_file "camlstartup" ext_asm
   in
-  if !Clflags.use_llvm then begin
-    if Llvmcompile.assemble_file temp1 temp2 startup startup_obj <> 0 then
+  if Asmgen.assemble_file temp1 temp2 startup startup_obj <> 0 then
     raise(Error(Assembler_error startup));
-  end else
-    if Proc.assemble_file startup startup_obj <> 0
-    then raise(Error(Assembler_error startup));
   try
     call_linker (List.map object_file_name objfiles) startup_obj output_name;
     if not !Clflags.keep_startup_file then remove_file startup;

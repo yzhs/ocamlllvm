@@ -1,9 +1,26 @@
+(***********************************************************************)
+(*                                                                     *)
+(*                           Objective Caml                            *)
+(*                                                                     *)
+(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
+(*                                                                     *)
+(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
+(*  en Automatique.  All rights reserved.  This file is distributed    *)
+(*  under the terms of the Q Public License version 1.0.               *)
+(*                                                                     *)
+(***********************************************************************)
+
+(* $Id$ *)
+
+open Misc
 open Cmm
-open Emit
+open Arch
 open Emitaux
-open Llvm_aux
-open Llvm_mach
-open Llvm_linearize
+
+open Aux
+open Reg
+open Mach
+open Linearize
 
 let error s = error ("Llvmemit: " ^ s)
 
@@ -17,78 +34,6 @@ let counter_inc () = counter := !counter + 1
 let c () = counter_inc (); "." ^ string_of_int !counter
 
 let types = Hashtbl.create 10
-
-let translate_symbol s =
-  let result = ref "" in 
-  for i = 0 to String.length s - 1 do
-    let c = s.[i] in
-    match c with
-      ' ' ->
-          result := !result ^ "_"
-    | _ -> result := !result ^ Printf.sprintf "%c" c
-  done;
-  !result
-
-let translate_comp typ =
-  match typ with
-  | Double -> begin
-      function
-      | Comp_eq -> "fcmp oeq"
-      | Comp_ne -> "fcmp one"
-      | Comp_lt -> "fcmp olt"
-      | Comp_le -> "fcmp ole"
-      | Comp_gt -> "fcmp ogt"
-      | Comp_ge -> "fcmp oge"
-    end
-  | Address _ -> begin
-      function
-      | Comp_eq -> "icmp  eq"
-      | Comp_ne -> "icmp  ne"
-      | Comp_lt -> "icmp slt"
-      | Comp_le -> "icmp sle"
-      | Comp_gt -> "icmp sgt"
-      | Comp_ge -> "icmp sge"
-    end
-  | Integer _ -> begin
-      function
-      | Comp_eq -> "icmp  eq"
-      | Comp_ne -> "icmp  ne"
-      | Comp_lt -> "icmp ult"
-      | Comp_le -> "icmp ule"
-      | Comp_gt -> "icmp ugt"
-      | Comp_ge -> "icmp uge"
-    end
-  | _ -> error "no comparison operations are defined for this type"
-
-let print_array f arr =
-  String.concat ", " (Array.to_list (Array.map f arr))
-
-(* Produce a verbose representation of an Instruktion. Used to produce debugging
-* output in case something goes wrong when generating LLVM IR. *)
-let to_string instr = begin
-  let res = instr.res in
-  match instr.desc with
-    Lend -> print_string "end"
-  | Lop op -> print_string (string_of_reg res ^ " = op " ^ string_of_binop op)
-  | Lcomp op -> print_string (string_of_reg res ^ " = comp " ^ string_of_comp (typeof instr.arg.(0)) op)
-  | Lcast op -> print_string (string_of_reg res ^ " = cast " ^ string_of_cast op)
-  | Lalloca -> print_string (string_of_reg res ^ " = alloca " ^ string_of_type (try deref (typeof res) with Cast_error s -> error ("dereferencing alloca argument " ^ reg_name res ^ " failed")))
-  | Lload -> print_string (string_of_reg res ^ " = load")
-  | Lstore -> print_string ("store ")
-  | Lgetelemptr -> print_string (string_of_reg res ^ " = getelemptr")
-  | Lfptosi -> print_string (string_of_reg res ^ " = fptosi")
-  | Lsitofp -> print_string (string_of_reg res ^ " = sitofp")
-  | Lcall fn -> print_string (string_of_reg res ^ " = call " ^ string_of_reg fn)
-  | Lextcall fn -> print_string (string_of_reg res ^ " = extcall " ^ string_of_reg fn)
-  | Llabel name -> print_string ("label " ^ name)
-  | Lbranch name -> print_string ("branch " ^ name)
-  | Lcondbranch(ifso, ifnot) -> print_string ("branch " ^ ifso ^ ", " ^ ifnot)
-  | Lswitch(default, lbls) -> print_string ("switch default " ^ default ^ " cases [" ^ print_array (fun x -> x) lbls ^ "]")
-  | Lreturn -> print_string ("return")
-  | Lunreachable -> print_string ("unreachable")
-  | Lcomment _ -> print_string ("comment")
-  end;
-  print_endline (" (" ^ print_array string_of_reg instr.arg ^ ")")
 
 let emit_label lbl = emit_nl (lbl ^ ":")
 let emit_instr instr = emit_nl ("\t" ^ instr)
@@ -110,7 +55,7 @@ let rec instr_iter f instr =
   end
 
 let emit_call res cc fn args =
-  let fn = " " ^ reg_name fn ^ "(" ^ print_array string_of_reg args ^ ") nounwind" in
+  let fn = " " ^ reg_name fn ^ "(" ^ Printlinearize.print_array string_of_reg args ^ ") nounwind" in
   emit_instr ((if res <> Nothing then reg_name res ^ " = " else "") ^ "tail call " ^
               cc ^ " " ^ (if res <> Nothing then string_of_type (typeof res) else "void") ^ fn)
 
@@ -135,6 +80,10 @@ let emit_llvm instr =
   | Lsitofp, [|value|], Reg(_, typ) -> emit_cast res "sitofp" value typ
   | Lcall fn, args, _ -> emit_call res calling_conv fn args
   | Lextcall fn, args, _ -> emit_call res "ccc" fn args
+  | Linvoke(fn, lbl, dummy), args, _ ->
+      emit_instr ((if res <> Nothing then reg_name res ^ " = " else "") ^ "invoke ccc " ^ string_of_type(typeof res) ^ " " ^ reg_name fn ^ "(" ^
+                  Printlinearize.print_array string_of_reg args ^ ") nounwind to label %" ^ lbl ^ " unwind label %" ^ dummy)
+  | Llandingpad, [||], Nothing -> emit_instr ("%foo" ^ c () ^ " = landingpad i8 personality i32 (...)* @__gxx_personality_v0 catch i8* @...")
   | Llabel name, [||], Nothing -> emit_label name
   | Lbranch lbl, [||], Nothing -> emit_instr ("br label %" ^ lbl)
   | Lcondbranch(then_label, else_label), [|cond|], Nothing ->
@@ -161,6 +110,7 @@ let emit_llvm instr =
   | Lgetelemptr, _, _ -> error ("getelemptr with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lfptosi, _, _ -> error ("fptosi with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lsitofp, _, _ -> error ("sitofp with " ^ string_of_int (Array.length arg) ^ " arguments")
+  | Llandingpad, _, _ -> error ("landingpad with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Llabel name, _, _ -> error ("label with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lbranch lbl, _, _ -> error ("branch with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lcondbranch(then_label, else_label), _, _ -> error ("condbranch with " ^ string_of_int (Array.length arg) ^ " arguments")
@@ -178,7 +128,7 @@ let fundecl = function { fun_name = name; fun_args = args; fun_body = body } ->
     try instr_iter emit_llvm body
     with Llvm_error s ->
       print_endline ("emitting code for " ^ name ^ " failed");
-      instr_iter to_string body;
+      instr_iter Printlinearize.print_instr body;
       error s
   end;
   emit_nl "}\n"
@@ -204,6 +154,8 @@ let header =
 
   ; "declare double @fabs(double) nounwind"
   ; "declare void @llvm.gcroot(i8**, i8*) nounwind"
+  ; "declare i8* @llvm.stacksave()"
+  ; "declare i32 @__gxx_personality_v0(...)"
   (*
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc1() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc2() nounwind"
@@ -213,10 +165,12 @@ let header =
   ; "declare void @caml_ml_array_bound_error() nounwind"
   ; "declare void @caml_call_gc() nounwind"
 
+  ; "@... = internal constant i8 1"
+
   ; "@caml_young_ptr = external global " ^ addr_type
   ; "@caml_young_limit = external global " ^ addr_type
-  ; "@caml_bottom_of_stack = external global " ^ addr_type
-  ; "@caml_last_return_address  = external global " ^ addr_type
+  ; "@caml_bottom_of_stack = external global i8*"
+  ; "@caml_last_return_address  = external global i8*" 
   ; "@caml_exn = external global " ^ addr_type
   ; "@caml_jump_buffer = external global %jump_buf_t"
   ]
@@ -252,88 +206,6 @@ let emit_constant_declarations () =
                    not (List.mem name (List.map fst !local_functions)) then
                   emit_nl ("@" ^ name ^ " = external global " ^ string_of_type int_type))
     !constants
-
-
-(* Emission of data *)
-
-let emit_align n =
-  let n = if macosx then Misc.log2 n else n in
-  emit_string "module asm \"        .align  "; emit_int n; emit_string "\"\n"
-
-let emit_string_literal s =
-  let last_was_escape = ref false in
-  emit_string "\\22";
-  for i = 0 to String.length s - 1 do
-    let c = s.[i] in
-    if c >= '0' && c <= '9' then
-      if !last_was_escape
-      then Printf.fprintf !output_channel "\\x%x" (Char.code c)
-      else output_char !output_channel c
-    else if c >= ' ' && c <= '~' && c <> '"' (* '"' *) && c <> '\\' then begin
-      output_char !output_channel c;
-      last_was_escape := false
-    end else begin
-      Printf.fprintf !output_channel "\\x%x" (Char.code c);
-      last_was_escape := true
-    end
-  done;
-  emit_string "\\22"
-
-let emit_string_directive directive s =
-  let l = String.length s in
-  if l = 0 then ()
-  else if l < 80 then begin
-    module_asm();
-    emit_string directive;
-    emit_string_literal s;
-    emit_string "\"\n"
-  end else begin
-    let i = ref 0 in
-    while !i < l do
-      module_asm();
-      let n = min (l - !i) 80 in
-      emit_string directive;
-      emit_string_literal (String.sub s !i n);
-      emit_string "\"\n";
-      i := !i + n
-    done
-  end
-
-
-let emit_item =
-  let emit_label l = emit_string (".L" ^ string_of_int l) in
-  function
-    Cglobal_symbol s ->
-      (emit_string "module asm \"\t.globl  "; emit_symbol s; emit_string "\"\n");
-  | Cdefine_symbol s ->
-      (module_asm(); emit_symbol s; emit_string ":\"\n")
-  | Cdefine_label lbl ->
-      (module_asm(); emit_label (100000 + lbl); emit_string ":\"\n")
-  | Cint8 n ->
-      (emit_string "module asm \"\t.byte   "; emit_int n; emit_string "\"\n")
-  | Cint16 n ->
-      (emit_string "module asm \"\t.word   "; emit_int n; emit_string "\"\n")
-  | Cint32 n ->
-      (emit_string "module asm \"\t.long   "; emit_nativeint n; emit_string "\"\n")
-  | Cint n ->
-      (emit_string "module asm \"\t.quad   "; emit_nativeint n; emit_string "\"\n")
-  | Csingle f ->
-      module_asm(); emit_float32_directive ".long" f; emit_string "\""
-  | Cdouble f ->
-      module_asm(); emit_float64_directive ".quad" f; emit_string "\""
-  | Csymbol_address s ->
-      (emit_string "module asm \"\t.quad   "; emit_symbol s; emit_string "\"\n")
-  | Clabel_address lbl ->
-      (emit_string "module asm \"\t.quad   "; emit_label (100000 + lbl); emit_string "\"\n")
-  | Cstring s ->
-      emit_string_directive "\t.ascii  " s
-  | Cskip n ->
-      if n > 0 then (emit_string "module asm \"\t.space  "; emit_int n; emit_string "\"\n")
-  | Calign n -> emit_align n
-
-let data l =
-  emit_nl "module asm \"\t.data\"";
-  List.iter emit_item l
 
 let begin_assembly() = List.iter emit_nl header
 

@@ -1,150 +1,67 @@
-(***********************************************************************)
-(*                                                                     *)
-(*                           Objective Caml                            *)
-(*                                                                     *)
-(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
-(*                                                                     *)
-(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
-(*  en Automatique.  All rights reserved.  This file is distributed    *)
-(*  under the terms of the Q Public License version 1.0.               *)
-(*                                                                     *)
-(***********************************************************************)
+open Arch
 
-(* $Id: reg.ml 9547 2010-01-22 12:48:24Z doligez $ *)
+exception Cast_error of string
 
-open Cmm
+(* Representation of LLVMs types *)
+type llvm_type =
+    Integer of int (* bitwidth *)
+  | Double
+  | Address of llvm_type
+  | Jump_buffer (* The type of a buffer used by setjmp/longjmp *)
+  | Void
+  | Any (* Used during type inference to signal that any type would be ok *)
+  | Function of llvm_type * llvm_type list (* return type, argument types *)
 
-type t =
-  { mutable name: string;
-    stamp: int;
-    typ: Cmm.machtype_component;
-    mutable loc: location;
-    mutable spill: bool;
-    mutable interf: t list;
-    mutable prefer: (t * int) list;
-    mutable degree: int;
-    mutable spill_cost: int;
-    mutable visited: bool }
+let rec string_of_type = function
+  | Integer i -> "i" ^ string_of_int i
+  | Double -> "double"
+  | Address typ -> string_of_type typ ^ "*"
+  | Jump_buffer -> "%jump_buf_t"
+  | Void -> "void"
+  | Function(ret, args) -> string_of_type ret ^ " (" ^ String.concat ", " (List.map string_of_type args) ^ ")"
+  | Any -> (*error "unable to infer type"*) "Any"
 
-and location =
-    Unknown
-  | Reg of int
-  | Stack of stack_location
+let deref typ = match typ with
+  | Address typ -> typ
+  | _ -> raise (Cast_error ("trying to dereference non-pointer type " ^ string_of_type typ))
 
-and stack_location =
-    Local of int
-  | Incoming of int
-  | Outgoing of int
+let int_type = Integer (8 * size_int)
+let addr_type = Address int_type
+let float_sized_int = Integer (8 * size_float)
+let byte = Integer 8
+let bit = Integer 1
 
-type reg = t
+let is_addr = function Address _ -> true | _ -> false
+let is_float = function Double -> true | _ -> false
+let is_int = function Integer _ -> true | _ -> false
 
-let dummy =
-  { name = ""; stamp = 0; typ = Int; loc = Unknown; spill = false;
-    interf = []; prefer = []; degree = 0; spill_cost = 0; visited = false }
 
-let currstamp = ref 0
-let reg_list = ref([] : t list)
 
-let create ty =
-  let r = { name = ""; stamp = !currstamp; typ = ty; loc = Unknown;
-            spill = false; interf = []; prefer = []; degree = 0;
-            spill_cost = 0; visited = false } in
-  reg_list := r :: !reg_list;
-  incr currstamp;
-  r
 
-let createv tyv =
-  let n = Array.length tyv in
-  let rv = Array.create n dummy in
-  for i = 0 to n-1 do rv.(i) <- create tyv.(i) done;
-  rv
 
-let createv_like rv =
-  let n = Array.length rv in
-  let rv' = Array.create n dummy in
-  for i = 0 to n-1 do rv'.(i) <- create rv.(i).typ done;
-  rv'
+type register = Const of string * llvm_type | Reg of string * llvm_type | Nothing
 
-let clone r =
-  let nr = create r.typ in
-  nr.name <- r.name;
-  nr
+let reg_counter = ref 0
+let reset_counter () = reg_counter := 0
 
-let at_location ty loc =
-  let r = { name = "R"; stamp = !currstamp; typ = ty; loc = loc; spill = false;
-            interf = []; prefer = []; degree = 0; spill_cost = 0;
-            visited = false } in
-  incr currstamp;
-  r
+let new_reg name typ =
+  reg_counter := !reg_counter + 1;
+  Reg(name ^ "." ^ string_of_int !reg_counter, typ)
 
-let first_virtual_reg_stamp = ref (-1)
 
-let reset() =
-  (* When reset() is called for the first time, the current stamp reflects
-     all hard pseudo-registers that have been allocated by Proc, so
-     remember it and use it as the base stamp for allocating
-     soft pseudo-registers *)
-  if !first_virtual_reg_stamp = -1 then first_virtual_reg_stamp := !currstamp;
-  currstamp := !first_virtual_reg_stamp;
-  reg_list := []
+(* Print an expression in the intermediate format using a syntax inspired by
+ * S-expressions *)
+let reg_name = function
+    Const(value, _) -> value
+  | Reg(value, _) -> "%" ^ value
+  | Nothing -> "no_register"
 
-let all_registers() = !reg_list
-let num_registers() = !currstamp
+let typeof = function
+    Const(_, typ) -> typ
+  | Reg(_, typ) -> typ
+  | Nothing -> Void
 
-let reinit_reg r =
-  r.loc <- Unknown;
-  r.interf <- [];
-  r.prefer <- [];
-  r.degree <- 0;
-  (* Preserve the very high spill costs introduced by the reloading pass *)
-  if r.spill_cost >= 100000
-  then r.spill_cost <- 100000
-  else r.spill_cost <- 0
-
-let reinit() =
-  List.iter reinit_reg !reg_list
-
-module RegOrder =
-  struct
-    type t = reg
-    let compare r1 r2 = r1.stamp - r2.stamp
-  end
-
-module Set = Set.Make(RegOrder)
-module Map = Map.Make(RegOrder)
-
-let add_set_array s v =
-  match Array.length v with
-    0 -> s
-  | 1 -> Set.add v.(0) s
-  | n -> let rec add_all i =
-           if i >= n then s else Set.add v.(i) (add_all(i+1))
-         in add_all 0
-
-let diff_set_array s v =
-  match Array.length v with
-    0 -> s
-  | 1 -> Set.remove v.(0) s
-  | n -> let rec remove_all i =
-           if i >= n then s else Set.remove v.(i) (remove_all(i+1))
-         in remove_all 0
-
-let inter_set_array s v =
-  match Array.length v with
-    0 -> Set.empty
-  | 1 -> if Set.mem v.(0) s
-         then Set.add v.(0) Set.empty
-         else Set.empty
-  | n -> let rec inter_all i =
-           if i >= n then Set.empty
-           else if Set.mem v.(i) s then Set.add v.(i) (inter_all(i+1))
-           else inter_all(i+1)
-         in inter_all 0
-
-let set_of_array v =
-  match Array.length v with
-    0 -> Set.empty
-  | 1 -> Set.add v.(0) Set.empty
-  | n -> let rec add_all i =
-           if i >= n then Set.empty else Set.add v.(i) (add_all(i+1))
-         in add_all 0
+let string_of_reg = function
+    Const(value, typ) -> string_of_type typ ^ " " ^ value
+  | Reg(value, typ) -> string_of_type typ ^ " %" ^ value
+  | Nothing -> "void no_register"

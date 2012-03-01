@@ -1,131 +1,111 @@
-(***********************************************************************)
-(*                                                                     *)
-(*                           Objective Caml                            *)
-(*                                                                     *)
-(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
-(*                                                                     *)
-(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
-(*  en Automatique.  All rights reserved.  This file is distributed    *)
-(*  under the terms of the Q Public License version 1.0.               *)
-(*                                                                     *)
-(***********************************************************************)
+open Aux
+open Reg
 
-(* $Id: mach.ml 9547 2010-01-22 12:48:24Z doligez $ *)
+type binop =
+    Op_addi | Op_subi | Op_muli | Op_divi | Op_modi
+  | Op_and | Op_or | Op_xor | Op_lsl | Op_lsr | Op_asr
+  | Op_addf | Op_subf | Op_mulf | Op_divf
 
-(* Representation of machine code by sequences of pseudoinstructions *)
-
-type integer_comparison =
-    Isigned of Cmm.comparison
-  | Iunsigned of Cmm.comparison
-
-type integer_operation =
-    Iadd | Isub | Imul | Idiv | Imod
-  | Iand | Ior | Ixor | Ilsl | Ilsr | Iasr
-  | Icomp of integer_comparison
-  | Icheckbound
-
-type test =
-    Itruetest
-  | Ifalsetest
-  | Iinttest of integer_comparison
-  | Iinttest_imm of integer_comparison * int
-  | Ifloattest of Cmm.comparison * bool
-  | Ioddtest
-  | Ieventest
-
-type operation =
-    Imove
-  | Ispill
-  | Ireload
-  | Iconst_int of nativeint
-  | Iconst_float of string
-  | Iconst_symbol of string
-  | Icall_ind
-  | Icall_imm of string
-  | Itailcall_ind
-  | Itailcall_imm of string
-  | Iextcall of string * bool
-  | Istackoffset of int
-  | Iload of Cmm.memory_chunk * Arch.addressing_mode
-  | Istore of Cmm.memory_chunk * Arch.addressing_mode
-  | Ialloc of int
-  | Iintop of integer_operation
-  | Iintop_imm of integer_operation * int
-  | Inegf | Iabsf | Iaddf | Isubf | Imulf | Idivf
-  | Ifloatofint | Iintoffloat
-  | Ispecific of Arch.specific_operation
+type comp = Comp_eq | Comp_ne | Comp_lt | Comp_le | Comp_gt | Comp_ge
 
 type instruction =
   { desc: instruction_desc;
     next: instruction;
-    arg: Reg.t array;
-    res: Reg.t array;
-    dbg: Debuginfo.t;
-    mutable live: Reg.Set.t }
+    arg: register array;
+    res: register;
+    typ: llvm_type;
+    dbg: Debuginfo.t }
 
 and instruction_desc =
     Iend
-  | Iop of operation
-  | Ireturn
-  | Iifthenelse of test * instruction * instruction
+  | Ibinop of binop
+  | Icomp of comp
+  | Ialloca | Iload | Istore
+  | Isitofp | Ifptosi
+  | Igetelementptr
+  | Icall of register | Iextcall of register * bool
+  | Iifthenelse of instruction * instruction
   | Iswitch of int array * instruction array
   | Iloop of instruction
-  | Icatch of int * instruction * instruction
-  | Iexit of int
-  | Itrywith of instruction * instruction
-  | Iraise
+  | Iexit of int | Icatch of int * instruction * instruction
+  | Ireturn
+  | Iraise | Itrywith of instruction * instruction
+  | Ialloc of int (* length *)
+  | Iunreachable
+  | Icomment of string
 
 type fundecl =
-  { fun_name: string;
-    fun_args: Reg.t array;
-    fun_body: instruction;
-    fun_fast: bool }
+  { name: string;
+    args: (string * llvm_type) list;
+    body: instruction }
+
 
 let rec dummy_instr =
   { desc = Iend;
     next = dummy_instr;
     arg = [||];
-    res = [||];
-    dbg = Debuginfo.none;
-    live = Reg.Set.empty }
+    res = Nothing;
+    typ = Void;
+    dbg = Debuginfo.none }
 
 let end_instr () =
   { desc = Iend;
     next = dummy_instr;
     arg = [||];
-    res = [||];
-    dbg = Debuginfo.none;
-    live = Reg.Set.empty }
+    res = Nothing;
+    typ = Void;
+    dbg = Debuginfo.none }
 
-let instr_cons d a r n =
-  { desc = d; next = n; arg = a; res = r;
-    dbg = Debuginfo.none; live = Reg.Set.empty }
+let instr_cons d a r t n =
+  { desc = d; next = n; arg = a; res = r; typ = t; dbg = Debuginfo.none }
 
-let instr_cons_debug d a r dbg n =
-  { desc = d; next = n; arg = a; res = r; dbg = dbg; live = Reg.Set.empty }
+let instr_cons_debug d a r t dbg n =
+  { desc = d; next = n; arg = a; res = r; typ = t; dbg = dbg }
 
-let rec instr_iter f i =
-  match i.desc with
-    Iend -> ()
-  | _ ->
-      f i;
-      match i.desc with
-        Iend -> ()
-      | Ireturn | Iop(Itailcall_ind) | Iop(Itailcall_imm _) -> ()
-      | Iifthenelse(tst, ifso, ifnot) ->
-          instr_iter f ifso; instr_iter f ifnot; instr_iter f i.next
-      | Iswitch(index, cases) ->
-          for i = 0 to Array.length cases - 1 do
-            instr_iter f cases.(i)
-          done;
-          instr_iter f i.next
-      | Iloop(body) ->
-          instr_iter f body; instr_iter f i.next
-      | Icatch(_, body, handler) ->
-          instr_iter f body; instr_iter f handler; instr_iter f i.next
-      | Iexit _ -> ()
-      | Itrywith(body, handler) ->
-          instr_iter f body; instr_iter f handler; instr_iter f i.next
-      | Iraise -> ()
-      | _ ->
-          instr_iter f i.next
+let string_of_binop = function
+  | Op_addi -> "add"
+  | Op_subi -> "sub"
+  | Op_muli -> "mul"
+  | Op_divi -> "sdiv"
+  | Op_modi -> "srem"
+  | Op_and  -> "and"
+  | Op_or   -> "or"
+  | Op_xor  -> "xor"
+  | Op_lsl  -> "shl"
+  | Op_lsr  -> "lshr"
+  | Op_asr  -> "ashr"
+  | Op_addf -> "fadd"
+  | Op_subf -> "fsub"
+  | Op_mulf -> "fmul"
+  | Op_divf -> "fdiv"
+
+let string_of_comp typ =
+  match typ with
+  | Double -> begin
+      function
+      | Comp_eq -> "fcmp oeq"
+      | Comp_ne -> "fcmp une" (* this one has to be unordered apparently *)
+      | Comp_lt -> "fcmp olt"
+      | Comp_le -> "fcmp ole"
+      | Comp_gt -> "fcmp ogt"
+      | Comp_ge -> "fcmp oge"
+    end
+  | Integer _ -> begin
+      function
+      | Comp_eq -> "icmp  eq"
+      | Comp_ne -> "icmp  ne"
+      | Comp_lt -> "icmp slt"
+      | Comp_le -> "icmp sle"
+      | Comp_gt -> "icmp sgt"
+      | Comp_ge -> "icmp sge"
+    end
+  | Address _ -> begin
+      function
+      | Comp_eq -> "icmp  eq"
+      | Comp_ne -> "icmp  ne"
+      | Comp_lt -> "icmp ult"
+      | Comp_le -> "icmp ule"
+      | Comp_gt -> "icmp ugt"
+      | Comp_ge -> "icmp uge"
+    end
+  | _ -> error "no comparison operations are defined for this type"

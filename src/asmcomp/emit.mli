@@ -14,9 +14,10 @@
 
 (* Generation of assembly code *)
 
-val macosx: bool
-val emit_symbol: string -> unit
-val fundecl: Linearize.fundecl -> unit
+(* Emit data declarations using LLVM's module level assembly *)
 val data: Cmm.data_item list -> unit
-val begin_assembly: unit -> unit
-val end_assembly: unit -> unit
+
+(* Print the header *)
+val begin_assembly : unit -> unit
+(* Emit the function and variable declarations *)
+val end_assembly : unit -> unit

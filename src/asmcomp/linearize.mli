@@ -1,54 +1,47 @@
-(***********************************************************************)
-(*                                                                     *)
-(*                           Objective Caml                            *)
-(*                                                                     *)
-(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
-(*                                                                     *)
-(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
-(*  en Automatique.  All rights reserved.  This file is distributed    *)
-(*  under the terms of the Q Public License version 1.0.               *)
-(*                                                                     *)
-(***********************************************************************)
+open Reg
+open Mach
 
-(* $Id: linearize.mli 9547 2010-01-22 12:48:24Z doligez $ *)
+type label = string
 
-(* Transformation of Mach code into a list of pseudo-instructions. *)
-
-type label = int
-val new_label: unit -> label
+type cast = Zext | Trunc | Bitcast | Inttoptr | Ptrtoint
 
 type instruction =
   { mutable desc: instruction_desc;
     mutable next: instruction;
-    arg: Reg.t array;
-    res: Reg.t array;
-    dbg: Debuginfo.t;
-    live: Reg.Set.t }
+    arg: register array;
+    res: register;
+    dbg: Debuginfo.t }
 
 and instruction_desc =
     Lend
-  | Lop of Mach.operation
-  | Lreloadretaddr
+  | Lcast of cast
+  | Lcomp of comp 
+  | Lop of binop
+  | Lfptosi | Lsitofp
+  | Lalloca | Lload | Lstore | Lgetelemptr
+  | Lcall of register | Lextcall of register | Linvoke of register * label * label
+  | Llandingpad
   | Lreturn
   | Llabel of label
   | Lbranch of label
-  | Lcondbranch of Mach.test * label
-  | Lcondbranch3 of label option * label option * label option
-  | Lswitch of label array
-  | Lsetuptrap of label
-  | Lpushtrap
-  | Lpoptrap
-  | Lraise
-
-val has_fallthrough :  instruction_desc -> bool
-val end_instr: instruction
-val instr_cons:
-  instruction_desc -> Reg.t array -> Reg.t array -> instruction -> instruction
-val invert_test: Mach.test -> Mach.test
+  | Lcondbranch of label * label 
+  | Lswitch of label * label array
+  | Lunreachable
+  | Lcomment of string
 
 type fundecl =
   { fun_name: string;
-    fun_body: instruction;
-    fun_fast: bool }
+    fun_args: register list;
+    fun_body: instruction }
+
+val end_instr : instruction
+
+val instr_cons :
+  instruction_desc -> register array -> register -> instruction -> instruction
+
+val cons_instr :
+  instruction_desc -> instruction -> instruction
 
 val fundecl: Mach.fundecl -> fundecl
+
+val string_of_cast : cast -> string

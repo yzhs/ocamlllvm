@@ -1,840 +1,446 @@
-(***********************************************************************)
-(*                                                                     *)
-(*                           Objective Caml                            *)
-(*                                                                     *)
-(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
-(*                                                                     *)
-(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
-(*  en Automatique.  All rights reserved.  This file is distributed    *)
-(*  under the terms of the Q Public License version 1.0.               *)
-(*                                                                     *)
-(***********************************************************************)
-
-(* $Id: selectgen.ml 10667 2010-09-02 13:29:21Z xclerc $ *)
-
-(* Selection of pseudo-instructions, assignment of pseudo-registers,
-   sequentialization. *)
-
-open Misc
 open Cmm
+open Emit
+open Emitaux
+open Aux
 open Reg
 open Mach
 
-type environment = (Ident.t, Reg.t array) Tbl.t
+let error s = error ("Llvm_selectgen: " ^ s)
 
-(* Infer the type of the result of an operation *)
+let types = Hashtbl.create 10
 
-let oper_result_type = function
-    Capply(ty, _) -> ty
-  | Cextcall(s, ty, alloc, _) -> ty
-  | Cload c ->
-      begin match c with
-        Word -> typ_addr
-      | Single | Double | Double_u -> typ_float
-      | _ -> typ_int
-      end
-  | Calloc -> typ_addr
-  | Cstore c -> typ_void
-  | Caddi | Csubi | Cmuli | Cdivi | Cmodi |
-    Cand | Cor | Cxor | Clsl | Clsr | Casr |
-    Ccmpi _ | Ccmpa _ | Ccmpf _ -> typ_int
-  | Cadda | Csuba -> typ_addr
-  | Cnegf | Cabsf | Caddf | Csubf | Cmulf | Cdivf -> typ_float
-  | Cfloatofint -> typ_float
-  | Cintoffloat -> typ_int
-  | Craise _ -> typ_void
-  | Ccheckbound _ -> typ_void
+(* {{{ *)
+let translate_op = function
+  | Caddi -> Op_addi
+  | Csubi -> Op_subi
+  | Cmuli -> Op_muli
+  | Cdivi -> Op_divi
+  | Cmodi -> Op_modi
+  | Cand  -> Op_and
+  | Cor   -> Op_or
+  | Cxor  -> Op_xor
+  | Clsl  -> Op_lsl
+  | Clsr  -> Op_lsr
+  | Casr  -> Op_asr
+  | Caddf -> Op_addf
+  | Csubf -> Op_subf
+  | Cmulf -> Op_mulf
+  | Cdivf -> Op_divf
+  | _ -> error "not a binary operator"
 
-(* Infer the size in bytes of the result of a simple expression *)
+let translate_comp = function
+    Ceq -> Comp_eq
+  | Cne -> Comp_ne
+  | Clt -> Comp_lt
+  | Cle -> Comp_le
+  | Cgt -> Comp_gt
+  | Cge -> Comp_ge
 
-let size_expr env exp =
-  let rec size localenv = function
-      Cconst_int _ | Cconst_natint _ -> Arch.size_int
-    | Cconst_symbol _ | Cconst_pointer _ | Cconst_natpointer _ ->
-        Arch.size_addr
-    | Cconst_float _ -> Arch.size_float
-    | Cvar id ->
-        begin try
-          Tbl.find id localenv
-        with Not_found ->
-        try
-          let regs = Tbl.find id env in
-          size_machtype (Array.map (fun r -> r.typ) regs)
-        with Not_found ->
-          fatal_error("Selection.size_expr: unbound var " ^
-                      Ident.unique_name id)
-        end
-    | Ctuple el ->
-        List.fold_right (fun e sz -> size localenv e + sz) el 0
-    | Cop(op, args) ->
-        size_machtype(oper_result_type op)
-    | Clet(id, arg, body) ->
-        size (Tbl.add id (size localenv arg) localenv) body
-    | Csequence(e1, e2) ->
-        size localenv e2
-    | _ ->
-        fatal_error "Selection.size_expr"
-  in size Tbl.empty exp
+let translate_mem = function
+  | Byte_unsigned | Byte_signed -> Integer 8
+  | Sixteen_unsigned | Sixteen_signed -> Integer 16
+  | Thirtytwo_unsigned | Thirtytwo_signed -> Integer 32 
+  | Word -> int_type
+  | Single | Cmm.Double | Double_u -> Double (* TODO handle single precision floating point numbers *)
 
-(* Swap the two arguments of an integer comparison *)
+let get_type name =
+  try Hashtbl.find types name
+  with Not_found -> error ("Could not find identifier " ^ name ^ ".")
 
-let swap_intcomp = function
-    Isigned cmp -> Isigned(swap_comparison cmp)
-  | Iunsigned cmp -> Iunsigned(swap_comparison cmp)
+let translate_id id = translate_symbol (Ident.unique_name id)
 
-(* Naming of registers *)
+let translate_machtype typ =
+  if typ = Cmm.typ_addr then addr_type
+  else if typ = Cmm.typ_float then Double
+  else if typ = Cmm.typ_int then int_type
+  else if typ = Cmm.typ_void then addr_type (* HACK some extcalls of the same function are void calls while others return i64* *)
+  else error "uknown machtype"
+(* }}} *)
 
-let all_regs_anonymous rv =
-  try
-    for i = 0 to Array.length rv - 1 do
-      if String.length rv.(i).name > 0 then raise Exit
-    done;
-    true
-  with Exit ->
-    false
+(* {{{ *)
+let instr_seq = ref dummy_instr
+let tmp_seq = ref []
 
-let name_regs id rv =
-  if Array.length rv = 1 then
-    rv.(0).name <- Ident.name id
-  else
-    for i = 0 to Array.length rv - 1 do
-      rv.(i).name <- Ident.name id ^ "#" ^ string_of_int i
-    done
+let rec last_instr instr =
+  match instr.next.desc with
+    Iend -> instr
+  | _ -> last_instr instr.next
 
-(* "Join" two instruction sequences, making sure they return their results
-   in the same registers. *)
+let insert_instr_debug seq (desc, arg, res, typ, dbg) =
+  seq := instr_cons_debug desc arg res typ dbg !seq
 
-let join opt_r1 seq1 opt_r2 seq2 =
-  match (opt_r1, opt_r2) with
-    (None, _) -> opt_r2
-  | (_, None) -> opt_r1
-  | (Some r1, Some r2) ->
-      let l1 = Array.length r1 in
-      assert (l1 = Array.length r2);
-      let r = Array.create l1 Reg.dummy in
-      for i = 0 to l1-1 do
-        if String.length r1.(i).name = 0 then begin
-          r.(i) <- r1.(i);
-          seq2#insert_move r2.(i) r1.(i)
-        end else if String.length r2.(i).name = 0 then begin
-          r.(i) <- r2.(i);
-          seq1#insert_move r1.(i) r2.(i)
-        end else begin
-          r.(i) <- Reg.create r1.(i).typ;
-          seq1#insert_move r1.(i) r.(i);
-          seq2#insert_move r2.(i) r.(i)
-        end
-      done;
-      Some r
+let insert seq desc arg res typ =
+  seq := (desc, arg, res, typ, Debuginfo.none) :: !seq;
+  res
 
-(* Same, for N branches *)
+let insert_debug seq desc dbg arg res typ =
+  seq := (desc, arg, res, typ, dbg) :: !seq;
+  res
 
-let join_array rs =
-  let some_res = ref None in
-  for i = 0 to Array.length rs - 1 do
-    let (r, s) = rs.(i) in
-    if r <> None then some_res := r
-  done;
-  match !some_res with
-    None -> None
-  | Some template ->
-      let size_res = Array.length template in
-      let res = Array.create size_res Reg.dummy in
-      for i = 0 to size_res - 1 do
-        res.(i) <- Reg.create template.(i).typ
-      done;
-      for i = 0 to Array.length rs - 1 do
-        let (r, s) = rs.(i) in
-        match r with
-          None -> ()
-        | Some r -> s#insert_moves r res
-      done;
-      Some res
+let add_type name typ =
+  Hashtbl.replace types name typ
 
-(* Extract debug info contained in a C-- operation *)
-let debuginfo_op = function
-  | Capply(_, dbg) -> dbg
-  | Cextcall(_, _, _, dbg) -> dbg
-  | Craise dbg -> dbg
-  | Ccheckbound dbg -> dbg
-  | _ -> Debuginfo.none
+let rec strip_addrs = function
+  | Address (Address _ as typ) -> strip_addrs typ
+  | typ -> typ
 
-(* Registers for catch constructs *)
-let catch_regs = ref []
+let comment seq str = ignore (insert seq (Icomment str) [||] Nothing Void)
 
-(* Name of function being compiled *)
-let current_function_name = ref ""
+let alloca seq name typ =
+  assert (typ <> Void);
+  add_type name (strip_addrs (Address typ));
+  insert seq Ialloca [||] (Reg(name, strip_addrs (Address typ))) (deref (strip_addrs (Address typ)))
 
-(* The default instruction selection class *)
+let load seq arg reg typ = insert seq Iload [|arg|] (new_reg reg typ) typ
+let store seq value addr typ = ignore (insert seq Istore [|value; addr|] Nothing typ)
 
-class virtual selector_generic = object (self)
+let call seq fn args res typ =
+  let ret = match typ with Address(Function(ret, _)) -> ret | _ -> error "not a function" in
+  insert seq (Icall fn) args (new_reg res ret) typ
+let extcall seq fn args res typ alloc =
+  let ret = match typ with Address(Function(ret, _)) -> ret | _ -> error "not a function" in
+  insert seq (Iextcall(fn,alloc)) args (new_reg res ret) typ
 
-(* Says if an expression is "simple". A "simple" expression has no
-   side-effects and its execution can be delayed until its value
-   is really needed. In the case of e.g. an [alloc] instruction,
-   the non-simple arguments are computed in right-to-left order
-   first, then the block is allocated, then the simple arguments are
-   evaluated and stored. *)
+let ifthenelse seq cond ifso ifnot =
+  let typ = typeof (last_instr ifso).res in
+  let typ = if typ = Void then typeof (last_instr ifnot).res else typ in
+  insert seq (Iifthenelse(ifso, ifnot)) [|cond|] (if typ = Void then Nothing else (new_reg "if_result" typ)) typ
 
-method is_simple_expr = function
-    Cconst_int _ -> true
-  | Cconst_natint _ -> true
-  | Cconst_float _ -> true
-  | Cconst_symbol _ -> true
-  | Cconst_pointer _ -> true
-  | Cconst_natpointer _ -> true
-  | Cvar _ -> true
-  | Ctuple el -> List.for_all self#is_simple_expr el
-  | Clet(id, arg, body) -> self#is_simple_expr arg && self#is_simple_expr body
-  | Csequence(e1, e2) -> self#is_simple_expr e1 && self#is_simple_expr e2
-  | Cop(op, args) ->
-      begin match op with
-        (* The following may have side effects *)
-      | Capply _ | Cextcall _ | Calloc | Cstore _ | Craise _ -> false
-        (* The remaining operations are simple if their args are *)
-      | _ ->
-          List.for_all self#is_simple_expr args
-      end
+let alloc seq len res typ = insert seq (Ialloc len) [||] (new_reg res typ) typ
+
+let binop seq op left right typ = insert seq (Ibinop op) [|left; right|] (new_reg "" typ) typ
+let comp seq op left right typ = insert seq (Icomp op) [|left; right|] (new_reg "" bit) typ
+
+let getelemptr seq addr offset typ =
+  insert seq Igetelementptr [|addr; offset|] (new_reg "" (typeof addr)) typ
+(* }}} *)
+
+let is_function = function
+  | Function(_,_) | Address(Function(_,_)) -> true
   | _ -> false
 
-(* Says whether an integer constant is a suitable immediate argument *)
+(* very simple type inference algorithm used to determine which type an
+ * identifier has *)
+(* {{{ *)
+let rec caml_type expect = function
+  | Cconst_int _ -> addr_type
+  | Cconst_natint _ -> int_type
+  | Cconst_float _ -> Double
+  | Cconst_symbol _ -> addr_type
+  | Cconst_pointer _ -> addr_type
+  | Cconst_natpointer _ -> addr_type
+  | Cvar id ->
+      let name = translate_id id in
+      if not (Hashtbl.mem types name) then
+        add_type name (if expect = Any then addr_type else expect);
+      expect
+  | Clet(id,arg,body) ->
+      let name = translate_id id in
+      let typ = caml_type Any arg in
+      if not (Hashtbl.mem types name) || not (is_function (get_type name)) then
+        add_type name (if typ = Any || typ = Void then addr_type else typ);
+      caml_type expect body
+  | Cassign(id,expr) ->
+      let typ = caml_type Any expr in
+      add_type (translate_id id) (if typ = Any || typ = Void then addr_type else typ);
+      expect
+  | Ctuple exprs -> ignore (List.map (caml_type Any) exprs); Any
+  | Cop(Capply(typ, debug), exprs) -> ignore (List.map (caml_type Any) exprs); expect
+  | Cop(Cextcall(fn, typ, alloc, debug), exprs) -> ignore (List.map (caml_type Any) exprs); expect
+  | Cop(Calloc, exprs) -> List.iter (fun x -> ignore (caml_type Any x)) exprs; addr_type (* this is always the correct result type of an allocation *)
+  | Cop(Cstore mem, [addr; value]) -> let typ = caml_type Any value in ignore (caml_type (Address typ) addr); Void
+  | Cop(Craise debug, args) -> ignore (List.map (caml_type Any) args); Void
+  | Cop(Ccheckbound debug, [arr; index]) -> ignore (caml_type int_type index); ignore (caml_type addr_type arr); Void
+  | Cop(Ccheckbound _, _) -> error "not implemented: checkound with #args != 2"
+  | Cop((Caddi|Csubi|Cmuli|Cdivi|Cmodi|Cand|Cor|Cxor|Clsl|Clsr|Casr), [left;right]) ->
+      ignore (caml_type int_type left);
+      ignore (caml_type int_type right);
+      int_type
+  | Cop((Caddf|Csubf|Cmulf|Cdivf), [left;right]) ->
+      ignore (caml_type Double left); ignore (caml_type Double right); Double
+  | Cop((Cadda|Csuba), [left;right]) ->
+      ignore (caml_type addr_type left);
+      ignore (caml_type addr_type right);
+      addr_type
+  | Cop(Ccmpi op, [left;right]) ->
+      ignore (caml_type int_type left);
+      ignore (caml_type int_type right);
+      int_type
+  | Cop(Ccmpf op, [left;right]) ->
+      ignore (caml_type Double left);
+      ignore (caml_type Double right);
+      int_type
+  | Cop(Ccmpa op, [left;right]) ->
+      ignore (caml_type addr_type left); ignore (caml_type addr_type right); int_type
+  | Cop(Cfloatofint, [arg]) -> ignore (caml_type int_type arg); Double
+  | Cop(Cintoffloat, [arg]) -> ignore (caml_type Double arg); int_type
+  | Cop(Cabsf, [arg]) -> ignore (caml_type Double arg); Double
+  | Cop(Cnegf, [arg]) -> ignore (caml_type Double arg); Double
+  | Cop(Cload mem, [arg]) ->
+      let typ = translate_mem mem in
+      ignore (caml_type (Address typ) arg);
+      if not (is_float typ) then int_type else typ
+  | Cop(_,_) -> error "operation not available"
+  | Csequence(fst,snd) -> ignore (caml_type Any fst); caml_type expect snd
+  | Cifthenelse(cond, expr1, expr2) ->
+      ignore (caml_type int_type cond);
+      let typ = caml_type expect expr1 in
+      let typ2 = caml_type (if typ <> Void then typ else expect) expr2 in
+      if typ <> Void then typ else typ2
+  | Cswitch(expr,is,exprs) ->
+      let typ = ref Void in
+      Array.iter (fun x -> let t = caml_type expect x in if t <> Void then typ := t) exprs;
+      !typ
+  | Cloop expr -> ignore (caml_type Void expr); Void
+  | Ccatch(i,ids,expr1,expr2) ->
+      ignore (caml_type expect expr1);
+      ignore (caml_type expect expr2);
+      expect
+  | Cexit(i,exprs) -> List.iter (fun x -> ignore (caml_type expect x)) exprs; expect
+  | Ctrywith(try_expr, id, with_expr) ->
+      let typ = caml_type expect try_expr in
+      add_type (translate_id id) addr_type; (* the exception's type *)
+      let with_typ = caml_type expect with_expr in
+      if typ = Void then with_typ else typ
+(* }}} *)
 
-method virtual is_immediate : int -> bool
+let fabs = Const("@fabs", Address(Function(Double, [Double])))
 
-(* Selection of addressing modes *)
+let reverse_instrs tmp = let seq = ref dummy_instr in List.iter (insert_instr_debug seq) !tmp; !seq
 
-method virtual select_addressing :
-  Cmm.expression -> Arch.addressing_mode * Cmm.expression
+let translate_float f =
+  let x = Int64.bits_of_float (float_of_string f) in
+  "0x" ^ Printf.sprintf "%Lx" x
 
-(* Default instruction selection for stores (of words) *)
+let rec compile_instr seq instr =
+  match instr with
+  | Cconst_int i ->
+      insert seq (Ibinop Op_addi) [|Const(string_of_int i, int_type); Const("0", int_type)|] (new_reg "" int_type) int_type
+  | Cconst_natint i ->
+      insert seq (Ibinop Op_addi) [|Const(Nativeint.to_string i, int_type); Const("0", int_type)|] (new_reg "" int_type) int_type
+  | Cconst_float f ->
+      insert seq (Ibinop Op_addf) [|Const(translate_float f, Double); Const("0.0", Double)|] (new_reg "" Double) Double (* TODO convert to hexadecimal format *)
+  | Cconst_symbol s ->
+      let typ =
+        try Hashtbl.find types (translate_symbol s)
+        with Not_found -> addr_type
+      in
+      begin match typ with
+      | Address(Function(_,_)) -> ()
+      | Function(_,_) -> ()
+      | _ -> Emit_common.add_const (translate_symbol s)
+      end;
+      insert seq Igetelementptr [|Const("@" ^ translate_symbol s, if is_addr typ then typ else Address typ); Const("0", int_type)|]
+        (new_reg (translate_symbol s) int_type) addr_type
+  | Cconst_pointer i ->
+      insert seq Igetelementptr [|Const(string_of_int i, int_type); Const("0", int_type)|] (new_reg "" addr_type) addr_type
+  | Cconst_natpointer i ->
+      insert seq Igetelementptr [|Const(Nativeint.to_string i, int_type); Const("0", int_type)|] (new_reg "" addr_type) addr_type
+  | Cvar id ->
+      print_debug "Cvar";
+      let name = translate_id id in
+      let typ = try deref (get_type name) with Cast_error s -> error ("dereferencing type of " ^ name ^ " failed") in
+      load seq (Reg(name, Address typ)) "" typ
+  | Clet(id, arg, body) ->
+      print_debug "Clet";
+      let name = translate_id id in
+      let typ = get_type name in
+      let res_arg = compile_instr seq arg in
+      let addr = assert (typ <> Void); alloca seq name typ in
+      store seq res_arg addr typ;
+      compile_instr seq body
+  | Cassign(id, expr) ->
+      print_debug "Cassign";
+      let name = translate_id id in
+      let value = compile_instr seq expr in
+      let typ = get_type name in
+      store seq value (Reg(name, typ)) (deref typ);
+      Nothing
+  | Ctuple [] -> Nothing
+  | Ctuple exprs ->
+      (* TODO What is Ctuple used for? Implement that. *)
+      Const("tuple_res", Void)
+  | Cop(Capply(typ, debug), (Cconst_symbol s as symb) :: args) ->
+      print_debug "Capply Ccons_symbol...";
+      let args = List.map (compile_instr seq) args in
+      let arg_types = Array.to_list (Array.make (List.length args) addr_type) in
+      let typ = Address(Function(addr_type, arg_types)) in
+      Emit_common.add_function (addr_type, Emit_common.calling_conv, translate_symbol s, arg_types);
+      add_type (translate_symbol s) typ;
+      call seq (compile_instr seq symb) (Array.of_list args) "call" typ
+  | Cop(Capply(typ, debug), clos :: args) ->
+      print_debug "Capply closure...";
+      let args = List.map (compile_instr seq) args in
+      let fn_type = Address(Function(addr_type, List.map (fun _ -> addr_type) args)) in
+      let fn = compile_instr seq clos in
+      call seq fn (Array.of_list args) "call" fn_type
+  | Cop(Capply(_,_), []) -> error "no function specified"
+  | Cop(Cextcall(fn, typ, alloc, debug), exprs) ->
+      print_debug "Cextcall";
+      let args = List.map (compile_instr seq) exprs in
+      Emit_common.add_function (translate_machtype typ, "ccc", fn, args);
+      let fn_type = Address(Function(translate_machtype typ, List.map (fun _ -> addr_type) args)) in
+      add_type fn fn_type;
+      extcall seq (Const("@" ^ fn, fn_type)) (Array.of_list args) "extcall" fn_type alloc
+  | Cop(Calloc, args) -> (* TODO figure out how much space a single element needs *)
+      print_debug "Calloc";
+      let args = List.map (compile_instr seq) args in
+      let alloc = alloc seq (List.length args) "alloc" addr_type in
+      let alloc = getelemptr seq alloc (Const("1", int_type)) addr_type in
+      let num = ref (-1) in
+      let emit_arg elem =
+        let counter = string_of_int !num in
+        let elemptr = getelemptr seq alloc (Const(counter, int_type)) addr_type in
+        num := !num + 1;
+        (* The store itself returns [Nothing] but the enclosing blocks result is
+        * [alloc].                                  vvvvv                     *)
+        ignore (insert seq Istore [|elem; elemptr|] alloc (typeof elem))
+      in
+      List.iter emit_arg args;
+      alloc
+  | Cop(Cstore mem, [addr; value]) ->
+      print_debug "Cstore";
+      store seq (compile_instr seq value) (compile_instr seq addr) (translate_mem mem);
+      Nothing
+  | Cop(Craise debug, [arg]) ->
+      print_debug "Craise";
+      insert_debug seq Iraise debug [|compile_instr seq arg|] Nothing Void
+  | Cop(Craise _, _) -> error "wrong number of arguments for Craise"
+  | Cop(Ccheckbound debug, [arr; index]) ->
+      print_debug "Ccheckbound";
+      let arr = compile_instr seq arr in
+      let index = compile_instr seq index in
+      assert (typeof arr <> Void);
+      let cond = insert seq (Icomp Comp_le) [|arr; index|] (new_reg "" bit) (typeof index) in
+      comment seq "checking bounds...";
+      let ifso =
+        instr_cons (Iextcall (Const("@caml_ml_array_bound_error", Address(Function(Void, []))), false)) [||] Nothing (Address (Function(Void, [])))
+          (instr_cons Iunreachable [||] Nothing Void dummy_instr)
+      in
+      ifthenelse seq cond ifso dummy_instr
+  | Cop(Ccheckbound _, _) -> error "not implemented: checkound with #args != 2"
+  | Cop(op, exprs) -> compile_operation seq op exprs
+  | Csequence(fst,snd) ->
+      print_debug "Csequence";
+      ignore (compile_instr seq fst); compile_instr seq snd
+  | Cifthenelse(cond, expr1, expr2) ->
+      print_debug "Cifthenelse";
+      let cond = compile_instr seq cond in
+      let ifso = ref [] in
+      let ifnot = ref [] in
+      ignore (compile_instr ifso expr1);
+      ignore (compile_instr ifnot expr2);
+      let cond = insert seq (Icomp Comp_ne) [|Const("0", int_type); cond|] (new_reg "" bit) int_type in
+      ifthenelse seq cond (reverse_instrs ifso) (reverse_instrs ifnot)
+  | Cswitch(expr, indices, exprs) ->
+      print_debug "Cswitch";
+      let value = compile_instr seq expr in
+      let blocks = Array.map (fun x -> let seq = ref [] in ignore (compile_instr seq x); reverse_instrs seq) exprs in
+      let typ = try typeof (List.find (fun x -> typeof (last_instr x).res <> Void) (Array.to_list blocks)).res with Not_found -> Void in
+      Emit_common.add_const "caml_exn_Match_failure";
+      insert seq (Iswitch(indices, blocks)) [|value|] (new_reg "switch" typ) typ
+  | Cloop expr ->
+      print_debug "Cloop";
+      let lseq = ref [] in
+      ignore (compile_instr lseq expr);
+      insert seq (Iloop (reverse_instrs lseq)) [||] Nothing Void
+  | Ccatch(i, ids, body, handler) ->
+      print_debug "Ccatch";
+      let fn id =
+        let id = translate_id id in
+        add_type id addr_type;
+        ignore (alloca seq id addr_type)
+      in
+      List.iter fn ids;
+      let instr_body = ref [] in
+      let instr_handler = ref [] in
+      ignore (compile_instr instr_body body);
+      ignore (compile_instr instr_handler handler);
+      let body_instrs = reverse_instrs instr_body in
+      let handler_instrs = reverse_instrs instr_handler in
+      let typ = typeof (last_instr body_instrs).res in
+      let typ = if typ = Void then typeof (last_instr handler_instrs).res else typ in
+      insert seq (Icatch(i, body_instrs, handler_instrs)) [||] (if typ = Void then Nothing else new_reg "catch_foo" typ) typ
+  | Cexit(i, exprs) ->
+      print_debug "Cexit";
+      List.iter (fun x -> ignore (compile_instr seq x)) exprs;
+      insert seq (Iexit i) [||] Nothing Void
+  | Ctrywith(try_expr, id, with_expr) ->
+      print_debug "Ctrywith";
+      let try_seq = ref [] in
+      let with_seq = ref [] in
+      ignore (compile_instr try_seq try_expr);
+      ignore (insert with_seq Igetelementptr [|Const("@caml_exn", Address addr_type); Const("0", int_type)|] (Reg(translate_id id, addr_type)) addr_type);
+      ignore (compile_instr with_seq with_expr);
+      let try_instrs = reverse_instrs try_seq in
+      let with_instrs = reverse_instrs with_seq in
+      let typ = typeof (last_instr try_instrs).res in
+      let typ = if typ = Void then typeof (last_instr with_instrs).res else typ in
+      insert seq (Itrywith(try_instrs, with_instrs)) [||] (if typ = Void then Nothing else new_reg "try_with" typ) typ
 
-method select_store addr arg =
-  (Istore(Word, addr), arg)
+and compile_operation seq op = function
+  | [l;r] -> begin
+      print_debug "Cop binop";
+      let left = compile_instr seq l in
+      let right = compile_instr seq r in
+      match op with
+      | Caddi | Csubi | Cmuli | Cdivi | Cmodi | Cand | Cor | Cxor | Clsl | Clsr
+      | Casr -> binop seq (translate_op op) left right int_type
+      | Caddf | Csubf | Cmulf | Cdivf ->
+          binop seq (translate_op op) left right Double
+      | Ccmpi op -> comp seq (translate_comp op) left right int_type
+      | Ccmpf op -> comp seq (translate_comp op) left right Double
+      | Ccmpa op -> comp seq (translate_comp op) left right addr_type
+      | Cadda -> getelemptr seq left right (Address byte)
+      | Csuba ->
+          let offset = binop seq Op_subi (Const("0", int_type)) right int_type in
+          getelemptr seq left offset (Address byte)
+      | _ -> error "Not a binary operator"
+    end
 
-(* Default instruction selection for operators *)
+  | [arg] -> begin
+      print_debug "Cop unop";
+      let arg = compile_instr seq arg in
+      match op with
+      | Cfloatofint -> insert seq Isitofp [|arg|] (new_reg "float_of_int" Double) Double
+      | Cintoffloat -> insert seq Ifptosi [|arg|] (new_reg "int_of_float" float_sized_int) float_sized_int
+      | Cabsf -> extcall seq fabs [|arg|] "absf_res" (Address(Function(Double, [Double]))) false
+      | Cnegf -> binop seq Op_subf (Const("0.0", Double)) arg Double
+      | Cload mem ->
+          let typ = translate_mem mem in
+          load seq arg "" typ
+      | _ -> error "Not a unary operator"
+    end
+  | _ -> error "There is no operator with this number of arguments"
 
-method select_operation op args =
-  match (op, args) with
-    (Capply(ty, dbg), Cconst_symbol s :: rem) -> (Icall_imm s, rem)
-  | (Capply(ty, dbg), _) -> (Icall_ind, args)
-  | (Cextcall(s, ty, alloc, dbg), _) -> (Iextcall(s, alloc), args)
-  | (Cload chunk, [arg]) ->
-      let (addr, eloc) = self#select_addressing arg in
-      (Iload(chunk, addr), [eloc])
-  | (Cstore chunk, [arg1; arg2]) ->
-      let (addr, eloc) = self#select_addressing arg1 in
-      if chunk = Word then begin
-        let (op, newarg2) = self#select_store addr arg2 in
-        (op, [newarg2; eloc])
-      end else begin
-        (Istore(chunk, addr), [arg2; eloc])
-        (* Inversion addr/datum in Istore *)
-      end
-  | (Calloc, _) -> (Ialloc 0, args)
-  | (Caddi, _) -> self#select_arith_comm Iadd args
-  | (Csubi, _) -> self#select_arith Isub args
-  | (Cmuli, [arg1; Cconst_int n]) ->
-      let l = Misc.log2 n in
-      if n = 1 lsl l
-      then (Iintop_imm(Ilsl, l), [arg1])
-      else self#select_arith_comm Imul args
-  | (Cmuli, [Cconst_int n; arg1]) ->
-      let l = Misc.log2 n in
-      if n = 1 lsl l
-      then (Iintop_imm(Ilsl, l), [arg1])
-      else self#select_arith_comm Imul args
-  | (Cmuli, _) -> self#select_arith_comm Imul args
-  | (Cdivi, _) -> self#select_arith Idiv args
-  | (Cmodi, _) -> self#select_arith_comm Imod args
-  | (Cand, _) -> self#select_arith_comm Iand args
-  | (Cor, _) -> self#select_arith_comm Ior args
-  | (Cxor, _) -> self#select_arith_comm Ixor args
-  | (Clsl, _) -> self#select_shift Ilsl args
-  | (Clsr, _) -> self#select_shift Ilsr args
-  | (Casr, _) -> self#select_shift Iasr args
-  | (Ccmpi comp, _) -> self#select_arith_comp (Isigned comp) args
-  | (Cadda, _) -> self#select_arith_comm Iadd args
-  | (Csuba, _) -> self#select_arith Isub args
-  | (Ccmpa comp, _) -> self#select_arith_comp (Iunsigned comp) args
-  | (Cnegf, _) -> (Inegf, args)
-  | (Cabsf, _) -> (Iabsf, args)
-  | (Caddf, _) -> (Iaddf, args)
-  | (Csubf, _) -> (Isubf, args)
-  | (Cmulf, _) -> (Imulf, args)
-  | (Cdivf, _) -> (Idivf, args)
-  | (Cfloatofint, _) -> (Ifloatofint, args)
-  | (Cintoffloat, _) -> (Iintoffloat, args)
-  | (Ccheckbound _, _) -> self#select_arith Icheckbound args
-  | _ -> fatal_error "Selection.select_oper"
 
-method private select_arith_comm op = function
-    [arg; Cconst_int n] when self#is_immediate n ->
-      (Iintop_imm(op, n), [arg])
-  | [arg; Cconst_pointer n] when self#is_immediate n ->
-      (Iintop_imm(op, n), [arg])
-  | [Cconst_int n; arg] when self#is_immediate n ->
-      (Iintop_imm(op, n), [arg])
-  | [Cconst_pointer n; arg] when self#is_immediate n ->
-      (Iintop_imm(op, n), [arg])
-  | args ->
-      (Iintop op, args)
+let fundecl = function
+  { fun_name = name; fun_args = args; fun_body = body; } ->
+    instr_seq := dummy_instr;
+    tmp_seq := [];
+    reset_counter();
+    Hashtbl.clear types;
+    List.iter (fun (name, args) -> Hashtbl.add types (translate_symbol name) (Address(Function(addr_type, args)))) !Emit_common.local_functions;
+    Hashtbl.add types (translate_symbol name) (Address(Function(addr_type, List.map (fun _ -> addr_type) args)));
+    ignore (caml_type Any body);
+    let args = List.map (fun (x, typ) -> (translate_symbol (Ident.unique_name x), addr_type)) args in
+    try
+      let foo (x, typ) =
+        let typ = try Hashtbl.find types x with Not_found -> addr_type in
+        let typ = if is_int typ then typ else addr_type in
+        store tmp_seq (Reg("param." ^ x, addr_type)) (assert (typ <> Void); alloca tmp_seq x typ) typ
+      in
+      List.iter foo args;
+      let body = compile_instr tmp_seq body in
 
-method private select_arith op = function
-    [arg; Cconst_int n] when self#is_immediate n ->
-      (Iintop_imm(op, n), [arg])
-  | [arg; Cconst_pointer n] when self#is_immediate n ->
-      (Iintop_imm(op, n), [arg])
-  | args ->
-      (Iintop op, args)
+      ignore (insert tmp_seq Ireturn [|body|] Nothing (if typeof body <> Void then addr_type else Void));
+      let argument_list = List.map (fun (id, _) -> "param." ^ id, addr_type) in
+      List.iter (insert_instr_debug instr_seq) !tmp_seq;
+      {name = translate_symbol name; args = argument_list args; body = !instr_seq}
+    with Llvm_error s ->
+      print_endline ("error while compiling function " ^ name);
+      print_endline (Printmach.instrs_to_string !instr_seq);
+      error s
 
-method private select_shift op = function
-    [arg; Cconst_int n] when n >= 0 && n < Arch.size_int * 8 ->
-      (Iintop_imm(op, n), [arg])
-  | args ->
-      (Iintop op, args)
 
-method private select_arith_comp cmp = function
-    [arg; Cconst_int n] when self#is_immediate n ->
-      (Iintop_imm(Icomp cmp, n), [arg])
-  | [arg; Cconst_pointer n] when self#is_immediate n ->
-      (Iintop_imm(Icomp cmp, n), [arg])
-  | [Cconst_int n; arg] when self#is_immediate n ->
-      (Iintop_imm(Icomp(swap_intcomp cmp), n), [arg])
-  | [Cconst_pointer n; arg] when self#is_immediate n ->
-      (Iintop_imm(Icomp(swap_intcomp cmp), n), [arg])
-  | args ->
-      (Iintop(Icomp cmp), args)
-
-(* Instruction selection for conditionals *)
-
-method select_condition = function
-    Cop(Ccmpi cmp, [arg1; Cconst_int n]) when self#is_immediate n ->
-      (Iinttest_imm(Isigned cmp, n), arg1)
-  | Cop(Ccmpi cmp, [Cconst_int n; arg2]) when self#is_immediate n ->
-      (Iinttest_imm(Isigned(swap_comparison cmp), n), arg2)
-  | Cop(Ccmpi cmp, [arg1; Cconst_pointer n]) when self#is_immediate n ->
-      (Iinttest_imm(Isigned cmp, n), arg1)
-  | Cop(Ccmpi cmp, [Cconst_pointer n; arg2]) when self#is_immediate n ->
-      (Iinttest_imm(Isigned(swap_comparison cmp), n), arg2)
-  | Cop(Ccmpi cmp, args) ->
-      (Iinttest(Isigned cmp), Ctuple args)
-  | Cop(Ccmpa cmp, [arg1; Cconst_pointer n]) when self#is_immediate n ->
-      (Iinttest_imm(Iunsigned cmp, n), arg1)
-  | Cop(Ccmpa cmp, [arg1; Cconst_int n]) when self#is_immediate n ->
-      (Iinttest_imm(Iunsigned cmp, n), arg1)
-  | Cop(Ccmpa cmp, [Cconst_pointer n; arg2]) when self#is_immediate n ->
-      (Iinttest_imm(Iunsigned(swap_comparison cmp), n), arg2)
-  | Cop(Ccmpa cmp, [Cconst_int n; arg2]) when self#is_immediate n ->
-      (Iinttest_imm(Iunsigned(swap_comparison cmp), n), arg2)
-  | Cop(Ccmpa cmp, args) ->
-      (Iinttest(Iunsigned cmp), Ctuple args)
-  | Cop(Ccmpf cmp, args) ->
-      (Ifloattest(cmp, false), Ctuple args)
-  | Cop(Cand, [arg; Cconst_int 1]) ->
-      (Ioddtest, arg)
-  | arg ->
-      (Itruetest, arg)
-
-(* Return an array of fresh registers of the given type.
-   Normally implemented as Reg.createv, but some
-   ports (e.g. Arm) can override this definition to store float values
-   in pairs of integer registers. *)
-
-method regs_for tys = Reg.createv tys
-
-(* Buffering of instruction sequences *)
-
-val mutable instr_seq = dummy_instr
-
-method insert_debug desc dbg arg res =
-  instr_seq <- instr_cons_debug desc arg res dbg instr_seq
-
-method insert desc arg res =
-  instr_seq <- instr_cons desc arg res instr_seq
-
-method extract =
-  let rec extract res i =
-    if i == dummy_instr
-    then res
-    else extract {i with next = res} i.next in
-  extract (end_instr()) instr_seq
-
-(* Insert a sequence of moves from one pseudoreg set to another. *)
-
-method insert_move src dst =
-  if src.stamp <> dst.stamp then
-    self#insert (Iop Imove) [|src|] [|dst|]
-
-method insert_moves src dst =
-  for i = 0 to Array.length src - 1 do
-    self#insert_move src.(i) dst.(i)
-  done
-
-(* Insert moves and stack offsets for function arguments and results *)
-
-method insert_move_args arg loc stacksize =
-  if stacksize <> 0 then self#insert (Iop(Istackoffset stacksize)) [||] [||];
-  self#insert_moves arg loc
-
-method insert_move_results loc res stacksize =
-  if stacksize <> 0 then self#insert(Iop(Istackoffset(-stacksize))) [||] [||];
-  self#insert_moves loc res
-
-(* Add an Iop opcode. Can be overridden by processor description
-   to insert moves before and after the operation, i.e. for two-address
-   instructions, or instructions using dedicated registers. *)
-
-method insert_op_debug op dbg rs rd =
-  self#insert_debug (Iop op) dbg rs rd;
-  rd
-
-method insert_op op rs rd =
-  self#insert (Iop op) rs rd;
-  rd
-
-(* Add the instructions for the given expression
-   at the end of the self sequence *)
-
-method emit_expr env exp =
-  match exp with
-    Cconst_int n ->
-      let r = self#regs_for typ_int in
-      Some(self#insert_op (Iconst_int(Nativeint.of_int n)) [||] r)
-  | Cconst_natint n ->
-      let r = self#regs_for typ_int in
-      Some(self#insert_op (Iconst_int n) [||] r)
-  | Cconst_float n ->
-      let r = self#regs_for typ_float in
-      Some(self#insert_op (Iconst_float n) [||] r)
-  | Cconst_symbol n ->
-      let r = self#regs_for typ_addr in
-      Some(self#insert_op (Iconst_symbol n) [||] r)
-  | Cconst_pointer n ->
-      let r = self#regs_for typ_addr in
-      Some(self#insert_op (Iconst_int(Nativeint.of_int n)) [||] r)
-  | Cconst_natpointer n ->
-      let r = self#regs_for typ_addr in
-      Some(self#insert_op (Iconst_int n) [||] r)
-  | Cvar v ->
-      begin try
-        Some(Tbl.find v env)
-      with Not_found ->
-        fatal_error("Selection.emit_expr: unbound var " ^ Ident.unique_name v)
-      end
-  | Clet(v, e1, e2) ->
-      begin match self#emit_expr env e1 with
-        None -> None
-      | Some r1 -> self#emit_expr (self#bind_let env v r1) e2
-      end
-  | Cassign(v, e1) ->
-      let rv =
-        try
-          Tbl.find v env
-        with Not_found ->
-          fatal_error ("Selection.emit_expr: unbound var " ^ Ident.name v) in
-      begin match self#emit_expr env e1 with
-        None -> None
-      | Some r1 -> self#insert_moves r1 rv; Some [||]
-      end
-  | Ctuple [] ->
-      Some [||]
-  | Ctuple exp_list ->
-      begin match self#emit_parts_list env exp_list with
-        None -> None
-      | Some(simple_list, ext_env) ->
-          Some(self#emit_tuple ext_env simple_list)
-      end
-  | Cop(Craise dbg, [arg]) ->
-      begin match self#emit_expr env arg with
-        None -> None
-      | Some r1 ->
-          let rd = [|Proc.loc_exn_bucket|] in
-          self#insert (Iop Imove) r1 rd;
-          self#insert_debug Iraise dbg rd [||];
-          None
-      end
-  | Cop(Ccmpf comp, args) ->
-      self#emit_expr env (Cifthenelse(exp, Cconst_int 1, Cconst_int 0))
-  | Cop(op, args) ->
-      begin match self#emit_parts_list env args with
-        None -> None
-      | Some(simple_args, env) ->
-          let ty = oper_result_type op in
-          let (new_op, new_args) = self#select_operation op simple_args in
-          let dbg = debuginfo_op op in
-          match new_op with
-            Icall_ind ->
-              Proc.contains_calls := true;
-              let r1 = self#emit_tuple env new_args in
-              let rarg = Array.sub r1 1 (Array.length r1 - 1) in
-              let rd = self#regs_for ty in
-              let (loc_arg, stack_ofs) = Proc.loc_arguments rarg in
-              let loc_res = Proc.loc_results rd in
-              self#insert_move_args rarg loc_arg stack_ofs;
-              self#insert_debug (Iop Icall_ind) dbg
-                          (Array.append [|r1.(0)|] loc_arg) loc_res;
-              self#insert_move_results loc_res rd stack_ofs;
-              Some rd
-          | Icall_imm lbl ->
-              Proc.contains_calls := true;
-              let r1 = self#emit_tuple env new_args in
-              let rd = self#regs_for ty in
-              let (loc_arg, stack_ofs) = Proc.loc_arguments r1 in
-              let loc_res = Proc.loc_results rd in
-              self#insert_move_args r1 loc_arg stack_ofs;
-              self#insert_debug (Iop(Icall_imm lbl)) dbg loc_arg loc_res;
-              self#insert_move_results loc_res rd stack_ofs;
-              Some rd
-          | Iextcall(lbl, alloc) ->
-              Proc.contains_calls := true;
-              let (loc_arg, stack_ofs) =
-                self#emit_extcall_args env new_args in
-              let rd = self#regs_for ty in
-              let loc_res = Proc.loc_external_results rd in
-              self#insert_debug (Iop(Iextcall(lbl, alloc))) dbg
-                             loc_arg loc_res;
-              self#insert_move_results loc_res rd stack_ofs;
-              Some rd
-          | Ialloc _ ->
-              Proc.contains_calls := true;
-              let rd = self#regs_for typ_addr in
-              let size = size_expr env (Ctuple new_args) in
-              self#insert (Iop(Ialloc size)) [||] rd;
-              self#emit_stores env new_args rd;
-              Some rd
-          | op ->
-              let r1 = self#emit_tuple env new_args in
-              let rd = self#regs_for ty in
-              Some (self#insert_op_debug op dbg r1 rd)
-      end
-  | Csequence(e1, e2) ->
-      begin match self#emit_expr env e1 with
-        None -> None
-      | Some r1 -> self#emit_expr env e2
-      end
-  | Cifthenelse(econd, eif, eelse) ->
-      let (cond, earg) = self#select_condition econd in
-      begin match self#emit_expr env earg with
-        None -> None
-      | Some rarg ->
-          let (rif, sif) = self#emit_sequence env eif in
-          let (relse, selse) = self#emit_sequence env eelse in
-          let r = join rif sif relse selse in
-          self#insert (Iifthenelse(cond, sif#extract, selse#extract))
-                      rarg [||];
-          r
-      end
-  | Cswitch(esel, index, ecases) ->
-      begin match self#emit_expr env esel with
-        None -> None
-      | Some rsel ->
-          let rscases = Array.map (self#emit_sequence env) ecases in
-          let r = join_array rscases in
-          self#insert (Iswitch(index,
-                               Array.map (fun (r, s) -> s#extract) rscases))
-                      rsel [||];
-          r
-      end
-  | Cloop(ebody) ->
-      let (rarg, sbody) = self#emit_sequence env ebody in
-      self#insert (Iloop(sbody#extract)) [||] [||];
-      Some [||]
-  | Ccatch(nfail, ids, e1, e2) ->
-      let rs =
-        List.map
-          (fun id ->
-            let r = self#regs_for typ_addr in name_regs id r; r)
-          ids in
-      catch_regs := (nfail, Array.concat rs) :: !catch_regs ;
-      let (r1, s1) = self#emit_sequence env e1 in
-      catch_regs := List.tl !catch_regs ;
-      let new_env =
-        List.fold_left
-        (fun env (id,r) -> Tbl.add id r env)
-        env (List.combine ids rs) in
-      let (r2, s2) = self#emit_sequence new_env e2 in
-      let r = join r1 s1 r2 s2 in
-      self#insert (Icatch(nfail, s1#extract, s2#extract)) [||] [||];
-      r
-  | Cexit (nfail,args) ->
-      begin match self#emit_parts_list env args with
-        None -> None
-      | Some (simple_list, ext_env) ->
-          let src = self#emit_tuple ext_env simple_list in
-          let dest =
-            try List.assoc nfail !catch_regs
-            with Not_found ->
-              Misc.fatal_error
-                ("Selectgen.emit_expr, on exit("^string_of_int nfail^")") in
-          self#insert_moves src dest ;
-          self#insert (Iexit nfail) [||] [||];
-          None
-      end
-  | Ctrywith(e1, v, e2) ->
-      Proc.contains_calls := true;
-      let (r1, s1) = self#emit_sequence env e1 in
-      let rv = self#regs_for typ_addr in
-      let (r2, s2) = self#emit_sequence (Tbl.add v rv env) e2 in
-      let r = join r1 s1 r2 s2 in
-      self#insert
-        (Itrywith(s1#extract,
-                  instr_cons (Iop Imove) [|Proc.loc_exn_bucket|] rv
-                             (s2#extract)))
-        [||] [||];
-      r
-
-method private emit_sequence env exp =
-  let s = {< instr_seq = dummy_instr >} in
-  let r = s#emit_expr env exp in
-  (r, s)
-
-method private bind_let env v r1 =
-  if all_regs_anonymous r1 then begin
-    name_regs v r1;
-    Tbl.add v r1 env
-  end else begin
-    let rv = Reg.createv_like r1 in
-    name_regs v rv;
-    self#insert_moves r1 rv;
-    Tbl.add v rv env
-  end
-
-method private emit_parts env exp =
-  if self#is_simple_expr exp then
-    Some (exp, env)
-  else begin
-    match self#emit_expr env exp with
-      None -> None
-    | Some r ->
-        if Array.length r = 0 then
-          Some (Ctuple [], env)
-        else begin
-          (* The normal case *)
-          let id = Ident.create "bind" in
-          if all_regs_anonymous r then
-            (* r is an anonymous, unshared register; use it directly *)
-            Some (Cvar id, Tbl.add id r env)
-          else begin
-            (* Introduce a fresh temp to hold the result *)
-            let tmp = Reg.createv_like r in
-            self#insert_moves r tmp;
-            Some (Cvar id, Tbl.add id tmp env)
-          end
-        end
-  end
-
-method private emit_parts_list env exp_list =
-  match exp_list with
-    [] -> Some ([], env)
-  | exp :: rem ->
-      (* This ensures right-to-left evaluation, consistent with the
-         bytecode compiler *)
-      match self#emit_parts_list env rem with
-        None -> None
-      | Some(new_rem, new_env) ->
-          match self#emit_parts new_env exp with
-            None -> None
-          | Some(new_exp, fin_env) -> Some(new_exp :: new_rem, fin_env)
-
-method private emit_tuple env exp_list =
-  let rec emit_list = function
-    [] -> []
-  | exp :: rem ->
-      (* Again, force right-to-left evaluation *)
-      let loc_rem = emit_list rem in
-      match self#emit_expr env exp with
-        None -> assert false  (* should have been caught in emit_parts *)
-      | Some loc_exp -> loc_exp :: loc_rem in
-  Array.concat(emit_list exp_list)
-
-method emit_extcall_args env args =
-  let r1 = self#emit_tuple env args in
-  let (loc_arg, stack_ofs as arg_stack) = Proc.loc_external_arguments r1 in
-  self#insert_move_args r1 loc_arg stack_ofs;
-  arg_stack
-
-method emit_stores env data regs_addr =
-  let a =
-    ref (Arch.offset_addressing Arch.identity_addressing (-Arch.size_int)) in
-  List.iter
-    (fun e ->
-      let (op, arg) = self#select_store !a e in
-      match self#emit_expr env arg with
-        None -> assert false
-      | Some regs ->
-          match op with
-            Istore(_, _) ->
-              for i = 0 to Array.length regs - 1 do
-                let r = regs.(i) in
-                let kind = if r.typ = Float then Double_u else Word in
-                self#insert (Iop(Istore(kind, !a)))
-                            (Array.append [|r|] regs_addr) [||];
-                a := Arch.offset_addressing !a (size_component r.typ)
-              done
-          | _ ->
-              self#insert (Iop op) (Array.append regs regs_addr) [||];
-              a := Arch.offset_addressing !a (size_expr env e))
-    data
-
-(* Same, but in tail position *)
-
-method private emit_return env exp =
-  match self#emit_expr env exp with
-    None -> ()
-  | Some r ->
-      let loc = Proc.loc_results r in
-      self#insert_moves r loc;
-      self#insert Ireturn loc [||]
-
-method emit_tail env exp =
-  match exp with
-    Clet(v, e1, e2) ->
-      begin match self#emit_expr env e1 with
-        None -> ()
-      | Some r1 -> self#emit_tail (self#bind_let env v r1) e2
-      end
-  | Cop(Capply(ty, dbg) as op, args) ->
-      begin match self#emit_parts_list env args with
-        None -> ()
-      | Some(simple_args, env) ->
-          let (new_op, new_args) = self#select_operation op simple_args in
-          match new_op with
-            Icall_ind ->
-              let r1 = self#emit_tuple env new_args in
-              let rarg = Array.sub r1 1 (Array.length r1 - 1) in
-              let (loc_arg, stack_ofs) = Proc.loc_arguments rarg in
-              if stack_ofs = 0 then begin
-                self#insert_moves rarg loc_arg;
-                self#insert (Iop Itailcall_ind)
-                            (Array.append [|r1.(0)|] loc_arg) [||]
-              end else begin
-                Proc.contains_calls := true;
-                let rd = self#regs_for ty in
-                let loc_res = Proc.loc_results rd in
-                self#insert_move_args rarg loc_arg stack_ofs;
-                self#insert_debug (Iop Icall_ind) dbg
-                            (Array.append [|r1.(0)|] loc_arg) loc_res;
-                self#insert(Iop(Istackoffset(-stack_ofs))) [||] [||];
-                self#insert Ireturn loc_res [||]
-              end
-          | Icall_imm lbl ->
-              let r1 = self#emit_tuple env new_args in
-              let (loc_arg, stack_ofs) = Proc.loc_arguments r1 in
-              if stack_ofs = 0 then begin
-                self#insert_moves r1 loc_arg;
-                self#insert (Iop(Itailcall_imm lbl)) loc_arg [||]
-              end else if lbl = !current_function_name then begin
-                let loc_arg' = Proc.loc_parameters r1 in
-                self#insert_moves r1 loc_arg';
-                self#insert (Iop(Itailcall_imm lbl)) loc_arg' [||]
-              end else begin
-                Proc.contains_calls := true;
-                let rd = self#regs_for ty in
-                let loc_res = Proc.loc_results rd in
-                self#insert_move_args r1 loc_arg stack_ofs;
-                self#insert_debug (Iop(Icall_imm lbl)) dbg loc_arg loc_res;
-                self#insert(Iop(Istackoffset(-stack_ofs))) [||] [||];
-                self#insert Ireturn loc_res [||]
-              end
-          | _ -> fatal_error "Selection.emit_tail"
-      end
-  | Csequence(e1, e2) ->
-      begin match self#emit_expr env e1 with
-        None -> ()
-      | Some r1 -> self#emit_tail env e2
-      end
-  | Cifthenelse(econd, eif, eelse) ->
-      let (cond, earg) = self#select_condition econd in
-      begin match self#emit_expr env earg with
-        None -> ()
-      | Some rarg ->
-          self#insert (Iifthenelse(cond, self#emit_tail_sequence env eif,
-                                         self#emit_tail_sequence env eelse))
-                      rarg [||]
-      end
-  | Cswitch(esel, index, ecases) ->
-      begin match self#emit_expr env esel with
-        None -> ()
-      | Some rsel ->
-          self#insert
-            (Iswitch(index, Array.map (self#emit_tail_sequence env) ecases))
-            rsel [||]
-      end
-  | Ccatch(nfail, ids, e1, e2) ->
-       let rs =
-        List.map
-          (fun id ->
-            let r = self#regs_for typ_addr in
-            name_regs id r  ;
-            r)
-          ids in
-      catch_regs := (nfail, Array.concat rs) :: !catch_regs ;
-      let s1 = self#emit_tail_sequence env e1 in
-      catch_regs := List.tl !catch_regs ;
-      let new_env =
-        List.fold_left
-        (fun env (id,r) -> Tbl.add id r env)
-        env (List.combine ids rs) in
-      let s2 = self#emit_tail_sequence new_env e2 in
-      self#insert (Icatch(nfail, s1, s2)) [||] [||]
-  | Ctrywith(e1, v, e2) ->
-      Proc.contains_calls := true;
-      let (opt_r1, s1) = self#emit_sequence env e1 in
-      let rv = self#regs_for typ_addr in
-      let s2 = self#emit_tail_sequence (Tbl.add v rv env) e2 in
-      self#insert
-        (Itrywith(s1#extract,
-                  instr_cons (Iop Imove) [|Proc.loc_exn_bucket|] rv s2))
-        [||] [||];
-      begin match opt_r1 with
-        None -> ()
-      | Some r1 ->
-          let loc = Proc.loc_results r1 in
-          self#insert_moves r1 loc;
-          self#insert Ireturn loc [||]
-      end
-  | _ ->
-      self#emit_return env exp
-
-method private emit_tail_sequence env exp =
-  let s = {< instr_seq = dummy_instr >} in
-  s#emit_tail env exp;
-  s#extract
-
-(* Sequentialization of a function definition *)
-
-method emit_fundecl f =
-  Proc.contains_calls := false;
-  current_function_name := f.Cmm.fun_name;
-  let rargs =
-    List.map
-      (fun (id, ty) -> let r = self#regs_for ty in name_regs id r; r)
-      f.Cmm.fun_args in
-  let rarg = Array.concat rargs in
-  let loc_arg = Proc.loc_parameters rarg in
-  let env =
-    List.fold_right2
-      (fun (id, ty) r env -> Tbl.add id r env)
-      f.Cmm.fun_args rargs Tbl.empty in
-  self#insert_moves loc_arg rarg;
-  self#emit_tail env f.Cmm.fun_body;
-  { fun_name = f.Cmm.fun_name;
-    fun_args = loc_arg;
-    fun_body = self#extract;
-    fun_fast = f.Cmm.fun_fast }
-
-end
-
-(* Tail call criterion (estimated).  Assumes:
-- all arguments are of type "int" (always the case for Caml function calls)
-- one extra argument representing the closure environment (conservative).
-*)
-
-let is_tail_call nargs =
-  assert (Reg.dummy.typ = Int);
-  let args = Array.make (nargs + 1) Reg.dummy in
-  let (loc_arg, stack_ofs) = Proc.loc_arguments args in
-  stack_ofs = 0
-
-let _ =
-  Simplif.is_tail_native_heuristic := is_tail_call
+(* vim: set foldenable : *)

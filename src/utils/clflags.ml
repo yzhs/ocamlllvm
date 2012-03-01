@@ -61,24 +61,10 @@ let optimize_for_speed = ref true       (* -compact *)
 let register_allocator = ref Config.default_register_allocator (* -regalloc *)
 
 and dump_cmm = ref false                (* -dcmm *)
-let dump_selection = ref false          (* -dsel *)
-let dump_live = ref false               (* -dlive *)
-let dump_spill = ref false              (* -dspill *)
-let dump_split = ref false              (* -dsplit *)
-let dump_scheduling = ref false         (* -dscheduling *)
-let dump_interf = ref false             (* -dinterf *)
-let dump_prefer = ref false             (* -dprefer *)
-let dump_interval = ref false           (* -dinterval *)
-let dump_regalloc = ref false           (* -dalloc *)
-let dump_reload = ref false             (* -dreload *)
-let dump_scheduling = ref false         (* -dscheduling *)
-let dump_linear = ref false             (* -dlinear *)
 let keep_startup_file = ref false       (* -dstartup *)
-let dump_combine = ref false            (* -dcombine *)
 
 let native_code = ref false             (* set to true under ocamlopt *)
 let inline_threshold = ref 10
-let use_llvm = ref true                 (* -llvm *)
 
 let dont_write_files = ref false        (* set to true under ocamldoc *)
 

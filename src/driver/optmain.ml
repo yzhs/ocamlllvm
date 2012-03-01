@@ -147,19 +147,7 @@ module Options = Main_args.Make_optcomp_options (struct
   let _drawlambda = set dump_rawlambda
   let _dlambda = set dump_lambda
   let _dcmm = set dump_cmm
-  let _dsel = set dump_selection
-  let _dcombine = set dump_combine
-  let _dlive () = dump_live := true; Printmach.print_live := true
-  let _dspill = set dump_spill
-  let _dsplit = set dump_split
-  let _dinterf = set dump_interf
-  let _dprefer = set dump_prefer
-  let _dalloc = set dump_regalloc
-  let _dreload = set dump_reload
-  let _dscheduling = set dump_scheduling
-  let _dlinear = set dump_linear
   let _dstartup = set keep_startup_file
-  let _llvm = clear use_llvm
 
   let anonymous = anonymous
 end);;

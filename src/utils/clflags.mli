@@ -58,22 +58,9 @@ val keep_asm_file : bool ref
 val optimize_for_speed : bool ref
 val register_allocator : string ref
 val dump_cmm : bool ref
-val dump_selection : bool ref
-val dump_live : bool ref
-val dump_spill : bool ref
-val dump_split : bool ref
-val dump_interf : bool ref
-val dump_prefer : bool ref
-val dump_interval : bool ref
-val dump_regalloc : bool ref
-val dump_reload : bool ref
-val dump_scheduling : bool ref
-val dump_linear : bool ref
 val keep_startup_file : bool ref
-val dump_combine : bool ref
 val native_code : bool ref
 val inline_threshold : int ref
-val use_llvm : bool ref
 val dont_write_files : bool ref
 val std_include_flag : string -> string
 val std_include_dir : unit -> string list

@@ -19,71 +19,50 @@ open Config
 open Clflags
 open Misc
 open Cmm
+open Reg
 
 type error = Assembler_error of string
 
 exception Error of error
 
-let liveness ppf phrase =
-  Liveness.fundecl ppf phrase; phrase
-
-let dump_if ppf flag message phrase =
-  if !flag then Printmach.phase message ppf phrase
-
-let pass_dump_if ppf flag message phrase =
-  dump_if ppf flag message phrase; phrase
-
-let pass_dump_linear_if ppf flag message phrase =
-  if !flag then fprintf ppf "*** %s@.%a@." message Printlinear.fundecl phrase;
-  phrase
-
-let rec regalloc ppf round fd =
-  if round > 50 then
-    fatal_error(fd.Mach.fun_name ^
-                ": function too complex, cannot complete register allocation");
-  dump_if ppf dump_live "Liveness analysis" fd;
-  Interf.build_graph fd;
-  if !dump_interf then Printmach.interferences ppf ();
-  if !dump_prefer then Printmach.preferences ppf ();
-  Coloring.allocate_registers();
-  dump_if ppf dump_regalloc "After register allocation" fd;
-  let (newfd, redo_regalloc) = Reload.fundecl fd in
-  dump_if ppf dump_reload "After insertion of reloading code" newfd;
-  if redo_regalloc then begin
-    Reg.reinit(); Liveness.fundecl ppf newfd; regalloc ppf (round + 1) newfd
-  end else newfd
-
 let (++) x f = f x
 
-let compile_fundecl (ppf : formatter) fd_cmm =
-  Reg.reset();
+let read_function phrase =
+  match phrase with
+  | Cfunction fd_cmm ->
+      let name = fd_cmm.fun_name in
+      let args = List.map (fun _ -> addr_type) fd_cmm.fun_args in
+      Emit_common.local_functions := (Aux.translate_symbol name, args) :: !Emit_common.local_functions
+  | Cdata _ -> ()
+
+let dump print x = if !debug then print x; x
+
+let compile_fundecl fd_cmm =
   fd_cmm
-  ++ Selection.fundecl
-  ++ pass_dump_if ppf dump_selection "After instruction selection"
-  ++ Comballoc.fundecl
-  ++ pass_dump_if ppf dump_combine "After allocation combining"
-  ++ liveness ppf
-  ++ pass_dump_if ppf dump_live "Liveness analysis"
-  ++ Spill.fundecl
-  ++ liveness ppf
-  ++ pass_dump_if ppf dump_spill "After spilling"
-  ++ Split.fundecl
-  ++ pass_dump_if ppf dump_split "After live range splitting"
-  ++ liveness ppf
-  ++ regalloc ppf 1
+  ++ Selectgen.fundecl
+(*  ++ dump (fun fn -> print_endline (Aux.to_string fn.body)) *)
   ++ Linearize.fundecl
-  ++ pass_dump_linear_if ppf dump_linear "Linearized code"
-  ++ Scheduling.fundecl
-  ++ pass_dump_linear_if ppf dump_scheduling "After instruction scheduling"
-  ++ Emit.fundecl
+  ++ Emit_common.fundecl
+
+let begin_assembly = Emit.begin_assembly
+
+let end_assembly = Emit.end_assembly
+
+let run_assembler asm infile outfile =
+  Ccomp.command (asm ^ " -o " ^ Filename.quote outfile ^ " " ^ Filename.quote infile)
+
+let assemble_file temp1 temp2 infile outfile =
+  let res = run_assembler Config.opt infile temp1 in 
+  if res <> 0 then res else
+  let res = run_assembler Config.llc temp1 temp2 in 
+  if res <> 0 then res else
+    Proc.assemble_file temp2 outfile
 
 let compile_phrase ppf p =
   if !dump_cmm then fprintf ppf "%a@." Printcmm.phrase p;
-  let compile_fundecl = if !use_llvm then Llvmcompile.compile_fundecl else compile_fundecl ppf
-  and data = if !use_llvm then Llvmcompile.data else Emit.data in
   match p with
   | Cfunction fd -> compile_fundecl fd
-  | Cdata dl -> data dl
+  | Cdata dl -> Emit.data dl
 
 
 (* For the native toplevel: generates generic functions unless
@@ -96,25 +75,18 @@ let compile_genfuns ppf f =
        | _ -> ())
     (Cmmgen.generic_functions true [Compilenv.current_unit_infos ()])
 
-let begin_assembly () =
-  if !use_llvm then Llvmcompile.begin_assembly() else Emit.begin_assembly()
-
-let end_assembly () =
-  if !use_llvm then Llvmcompile.end_assembly() else Emit.end_assembly()
-
 let compile_implementation ?toplevel prefixname ppf (size, lam) =
-  let suffix = if !use_llvm then ext_llvm else ext_asm in
   let asmfile =
     if !keep_asm_file
-    then prefixname ^ suffix
-    else Filename.temp_file "camlasm" suffix in
+    then prefixname ^ ext_llvm
+    else Filename.temp_file "camlasm" ext_llvm in
   let oc = open_out asmfile in
   begin try
     Emitaux.output_channel := oc;
-    begin_assembly();
+    Emit.begin_assembly();
     Closure.intro size lam
     ++ Cmmgen.compunit size
-    ++ List.map (fun x -> if !use_llvm then Llvmcompile.read_function x; x)
+    ++ List.map (fun x -> read_function x; x)
     ++ List.iter (compile_phrase ppf) ++ (fun () -> ());
     (match toplevel with None -> () | Some f -> compile_genfuns ppf f);
 
@@ -130,7 +102,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
             (List.map Primitive.native_name !Translmod.primitive_declarations))
       );
 
-    end_assembly();
+    Emit.end_assembly();
     close_out oc
   with x ->
     close_out oc;
@@ -145,8 +117,7 @@ let compile_implementation ?toplevel prefixname ppf (size, lam) =
     if !Clflags.keep_asm_file then prefixname ^ ext_asm
     else Filename.temp_dir_name ^ "/" ^ Filename.basename prefixname ^ ext_asm
   in
-  let assemble = if !use_llvm then Llvmcompile.assemble_file temp1 temp2 else Proc.assemble_file in
-  if assemble asmfile (prefixname ^ ext_obj) <> 0
+  if assemble_file temp1 temp2 asmfile (prefixname ^ ext_obj) <> 0
     then raise(Error(Assembler_error asmfile));
   if !keep_asm_file then ()
   else begin

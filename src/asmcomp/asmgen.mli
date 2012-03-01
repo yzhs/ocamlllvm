@@ -20,8 +20,12 @@ val compile_implementation :
 val compile_phrase :
     Format.formatter -> Cmm.phrase -> unit
 
+val read_function: Cmm.phrase -> unit
+
 val begin_assembly : unit -> unit
 val end_assembly : unit -> unit
+
+val assemble_file: string -> string -> string -> string -> int
 
 type error = Assembler_error of string
 exception Error of error

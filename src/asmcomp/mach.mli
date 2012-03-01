@@ -1,92 +1,52 @@
-(***********************************************************************)
-(*                                                                     *)
-(*                           Objective Caml                            *)
-(*                                                                     *)
-(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
-(*                                                                     *)
-(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
-(*  en Automatique.  All rights reserved.  This file is distributed    *)
-(*  under the terms of the Q Public License version 1.0.               *)
-(*                                                                     *)
-(***********************************************************************)
+open Reg
 
-(* $Id: mach.mli 9547 2010-01-22 12:48:24Z doligez $ *)
+type binop =
+    Op_addi | Op_subi | Op_muli | Op_divi | Op_modi
+  | Op_and | Op_or | Op_xor | Op_lsl | Op_lsr | Op_asr
+  | Op_addf | Op_subf | Op_mulf | Op_divf
 
-(* Representation of machine code by sequences of pseudoinstructions *)
-
-type integer_comparison =
-    Isigned of Cmm.comparison
-  | Iunsigned of Cmm.comparison
-
-type integer_operation =
-    Iadd | Isub | Imul | Idiv | Imod
-  | Iand | Ior | Ixor | Ilsl | Ilsr | Iasr
-  | Icomp of integer_comparison
-  | Icheckbound
-
-type test =
-    Itruetest
-  | Ifalsetest
-  | Iinttest of integer_comparison
-  | Iinttest_imm of integer_comparison * int
-  | Ifloattest of Cmm.comparison * bool
-  | Ioddtest
-  | Ieventest
-
-type operation =
-    Imove
-  | Ispill
-  | Ireload
-  | Iconst_int of nativeint
-  | Iconst_float of string
-  | Iconst_symbol of string
-  | Icall_ind
-  | Icall_imm of string
-  | Itailcall_ind
-  | Itailcall_imm of string
-  | Iextcall of string * bool
-  | Istackoffset of int
-  | Iload of Cmm.memory_chunk * Arch.addressing_mode
-  | Istore of Cmm.memory_chunk * Arch.addressing_mode
-  | Ialloc of int
-  | Iintop of integer_operation
-  | Iintop_imm of integer_operation * int
-  | Inegf | Iabsf | Iaddf | Isubf | Imulf | Idivf
-  | Ifloatofint | Iintoffloat
-  | Ispecific of Arch.specific_operation
+type comp = Comp_eq | Comp_ne | Comp_lt | Comp_le | Comp_gt | Comp_ge
 
 type instruction =
   { desc: instruction_desc;
     next: instruction;
-    arg: Reg.t array;
-    res: Reg.t array;
-    dbg: Debuginfo.t;
-    mutable live: Reg.Set.t }
+    arg: register array;
+    res: register;
+    typ: llvm_type;
+    dbg: Debuginfo.t }
 
 and instruction_desc =
     Iend
-  | Iop of operation
-  | Ireturn
-  | Iifthenelse of test * instruction * instruction
+  | Ibinop of binop
+  | Icomp of comp
+  | Ialloca | Iload | Istore
+  | Isitofp | Ifptosi
+  | Igetelementptr
+  | Icall of register | Iextcall of register * bool
+  | Iifthenelse of instruction * instruction
   | Iswitch of int array * instruction array
   | Iloop of instruction
-  | Icatch of int * instruction * instruction
-  | Iexit of int
-  | Itrywith of instruction * instruction
-  | Iraise
+  | Iexit of int | Icatch of int * instruction * instruction
+  | Ireturn
+  | Iraise | Itrywith of instruction * instruction
+  | Ialloc of int (* length *)
+  | Iunreachable
+  | Icomment of string
 
 type fundecl =
-  { fun_name: string;
-    fun_args: Reg.t array;
-    fun_body: instruction;
-    fun_fast: bool }
+ { name: string;
+   args: (string * llvm_type) list;
+   body: instruction }
 
-val dummy_instr: instruction
-val end_instr: unit -> instruction
-val instr_cons:
-      instruction_desc -> Reg.t array -> Reg.t array -> instruction ->
-        instruction
-val instr_cons_debug:
-      instruction_desc -> Reg.t array -> Reg.t array -> Debuginfo.t ->
-        instruction -> instruction
-val instr_iter: (instruction -> unit) -> instruction -> unit
+val dummy_instr : instruction
+
+val end_instr : unit -> instruction
+
+val instr_cons
+  : instruction_desc -> register array -> register -> llvm_type -> instruction -> instruction
+
+val instr_cons_debug
+  : instruction_desc -> register array -> register -> llvm_type -> Debuginfo.t -> instruction -> instruction
+
+val string_of_binop: binop -> string
+val string_of_comp: llvm_type -> comp -> string

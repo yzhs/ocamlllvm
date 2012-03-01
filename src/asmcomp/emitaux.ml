@@ -16,8 +16,6 @@
 
 open Debuginfo
 open Cmm
-open Reg
-open Linearize
 
 let output_channel = ref stdout
 
@@ -46,37 +44,39 @@ let emit_symbol esc s =
 
 let emit_string_literal s =
   let last_was_escape = ref false in
-  emit_string "\"";
+  emit_string "\\22";
   for i = 0 to String.length s - 1 do
     let c = s.[i] in
     if c >= '0' && c <= '9' then
       if !last_was_escape
-      then Printf.fprintf !output_channel "\\%o" (Char.code c)
+      then Printf.fprintf !output_channel "\\x%x" (Char.code c)
       else output_char !output_channel c
     else if c >= ' ' && c <= '~' && c <> '"' (* '"' *) && c <> '\\' then begin
       output_char !output_channel c;
       last_was_escape := false
     end else begin
-      Printf.fprintf !output_channel "\\%o" (Char.code c);
+      Printf.fprintf !output_channel "\\x%x" (Char.code c);
       last_was_escape := true
     end
   done;
-  emit_string "\""
+  emit_string "\\22"
 
 let emit_string_directive directive s =
   let l = String.length s in
   if l = 0 then ()
   else if l < 80 then begin
+    emit_string "module asm \"";
     emit_string directive;
     emit_string_literal s;
-    emit_char '\n'
+    emit_string "\"\n"
   end else begin
     let i = ref 0 in
     while !i < l do
+      emit_string "module asm \"";
       let n = min (l - !i) 80 in
       emit_string directive;
       emit_string_literal (String.sub s !i n);
-      emit_char '\n';
+      emit_string "\"\n";
       i := !i + n
     done
   end
@@ -99,20 +99,20 @@ let emit_bytes_directive directive s =
 
 let emit_float64_directive directive f =
   let x = Int64.bits_of_float (float_of_string f) in
-  emit_printf "\t%s\t0x%Lx\n" directive x
+  emit_printf "module asm \"\t%s\t0x%Lx\"\n" directive x
 
 let emit_float64_split_directive directive f =
   let x = Int64.bits_of_float (float_of_string f) in
   let lo = Int64.logand x 0xFFFF_FFFFL
   and hi = Int64.shift_right_logical x 32 in
-  emit_printf "\t%s\t0x%Lx, 0x%Lx\n"
+  emit_printf "module asm \"\t%s\t0x%Lx, 0x%Lx\"\n"
     directive
     (if Arch.big_endian then hi else lo)
     (if Arch.big_endian then lo else hi)
 
 let emit_float32_directive directive f =
   let x = Int32.bits_of_float (float_of_string f) in
-  emit_printf "\t%s\t0x%lx\n" directive x
+  emit_printf "module asm \"\t%s\t0x%lx\"\n" directive x
 
 (* Record live pointers at call points *)
 

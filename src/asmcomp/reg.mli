@@ -1,57 +1,48 @@
-(***********************************************************************)
-(*                                                                     *)
-(*                           Objective Caml                            *)
-(*                                                                     *)
-(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
-(*                                                                     *)
-(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
-(*  en Automatique.  All rights reserved.  This file is distributed    *)
-(*  under the terms of the Q Public License version 1.0.               *)
-(*                                                                     *)
-(***********************************************************************)
+exception Cast_error of string
 
-(* $Id: reg.mli 9210 2009-03-31 09:44:50Z xleroy $ *)
+type llvm_type =
+    Integer of int (* bitwidth *)
+  | Double
+  | Address of llvm_type
+  | Jump_buffer
+  | Void
+  | Any
+  | Function of llvm_type * llvm_type list (* return type, argument types *)
 
-(* Pseudo-registers *)
+type register = Const of string * llvm_type | Reg of string * llvm_type | Nothing
 
-type t =
-  { mutable name: string;               (* Name (for printing) *)
-    stamp: int;                         (* Unique stamp *)
-    typ: Cmm.machtype_component;        (* Type of contents *)
-    mutable loc: location;              (* Actual location *)
-    mutable spill: bool;                (* "true" to force stack allocation  *)
-    mutable interf: t list;             (* Other regs live simultaneously *)
-    mutable prefer: (t * int) list;     (* Preferences for other regs *)
-    mutable degree: int;                (* Number of other regs live sim. *)
-    mutable spill_cost: int;            (* Estimate of spilling cost *)
-    mutable visited: bool }             (* For graph walks *)
 
-and location =
-    Unknown
-  | Reg of int
-  | Stack of stack_location
+val string_of_type: llvm_type -> string
 
-and stack_location =
-    Local of int
-  | Incoming of int
-  | Outgoing of int
+val deref: llvm_type -> llvm_type
 
-val dummy: t
-val create: Cmm.machtype_component -> t
-val createv: Cmm.machtype -> t array
-val createv_like: t array -> t array
-val clone: t -> t
-val at_location: Cmm.machtype_component -> location -> t
+(* integer type with [size_int] bits *)
+val int_type : llvm_type
+(* pointer to [int_type] *)
+val addr_type : llvm_type
+(* an integer with [size_float] bits *)
+val float_sized_int : llvm_type
+(* 8 bit long integer *)
+val byte : llvm_type
+(* 1 bit *)
+val bit : llvm_type
 
-module Set: Set.S with type elt = t
-module Map: Map.S with type key = t
+val is_addr : llvm_type -> bool
+val is_float : llvm_type -> bool
+val is_int : llvm_type -> bool
 
-val add_set_array: Set.t -> t array -> Set.t
-val diff_set_array: Set.t -> t array -> Set.t
-val inter_set_array: Set.t -> t array -> Set.t
-val set_of_array: t array -> Set.t
 
-val reset: unit -> unit
-val all_registers: unit -> t list
-val num_registers: unit -> int
-val reinit: unit -> unit
+(* Turn an llvm_type into the string used by LLVM to represent that type. *)
+val string_of_type : llvm_type -> string
+
+(* For a pointer return what type its target has. *)
+val deref : llvm_type -> llvm_type
+
+
+val reset_counter: unit -> unit
+val new_reg: string -> llvm_type -> register
+
+(* Returns the type of result of the given instruction. *)
+val typeof: register -> llvm_type
+val reg_name: register -> string
+val string_of_reg: register -> string 
