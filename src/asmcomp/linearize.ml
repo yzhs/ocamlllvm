@@ -257,7 +257,7 @@ let rec linear i =
         insert Lload [|switch_res|] res
     | Ireturn, [|value|] ->
         print_debug "Ireturn";
-        if Void = typ then insert Lreturn [|cast (Const("123456789", int_type)) addr_type|] Nothing
+        if Void = typ then insert Lreturn [|Const("undef", addr_type)|] Nothing
         else insert Lreturn [|cast value typ|] Nothing
     | Iunreachable, [||] ->
         print_debug "Iunreachable";
