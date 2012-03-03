@@ -110,7 +110,7 @@ void caml_init_frame_descriptors(void)
     d = (frame_descr *)(tbl + 1);
     for (j = 0; j < len; j++) {
       h = Hash_retaddr(d->retaddr);
-      while (caml_frame_descriptors[h] != NULL) { // infitine loop
+      while (caml_frame_descriptors[h] != NULL) {
         h = (h+1) & caml_frame_descriptors_mask;
       }
       caml_frame_descriptors[h] = d;
@@ -189,9 +189,11 @@ void caml_oldify_local_roots (void)
       h = Hash_retaddr(retaddr);
       while(1) {
         d = caml_frame_descriptors[h];
+	if (NULL == d) break;
         if (d->retaddr == retaddr) break;
         h = (h+1) & caml_frame_descriptors_mask;
       }
+      if (NULL == d) break;
       if (d->frame_size != 0xFFFF) {
         /* Scan the roots in this frame */
         for (p = d->live_ofs, n = d->num_live; n > 0; n--, p++) {
@@ -312,9 +314,11 @@ void caml_do_local_roots(scanning_action f, char * bottom_of_stack,
       h = Hash_retaddr(retaddr);
       while(1) {
         d = caml_frame_descriptors[h];
+	if (NULL == d) break;
         if (d->retaddr == retaddr) break;
         h = (h+1) & caml_frame_descriptors_mask;
       }
+      if (NULL == d) break;
       if (d->frame_size != 0xFFFF) {
         /* Scan the roots in this frame */
         for (p = d->live_ofs, n = d->num_live; n > 0; n--, p++) {
