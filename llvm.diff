@@ -1,0 +1,29 @@
+Index: lib/CodeGen/AsmPrinter/OcamlGCPrinter.cpp
+===================================================================
+--- lib/CodeGen/AsmPrinter/OcamlGCPrinter.cpp   (revision 150367)
++++ lib/CodeGen/AsmPrinter/OcamlGCPrinter.cpp   (working copy)
+@@ -50,7 +50,13 @@
+   std::string SymName;
+   SymName += "caml";
+   size_t Letter = SymName.size();
+-  SymName.append(MId.begin(), std::find(MId.begin(), MId.end(), '.'));
++  // This is used to get sensible symbol names in the resulting assembly code.
++  if (std::string::npos != MId.find("camlstartup"))
++    SymName.append("_startup");
++  else {
++    std::string foo = MId.substr(MId.find_last_of("/")+1);
++    SymName.append(foo.begin(), std::find(foo.begin(), foo.end(), '.'));
++  }
+   SymName += "__";
+   SymName += Id;
+ 
+@@ -117,8 +123,7 @@
+     // Very rude!
+     report_fatal_error(" Too much descriptor for ocaml GC");
+   }
+-  AP.EmitInt16(NumDescriptors);
+-  AP.EmitAlignment(IntPtrSize == 4 ? 2 : 3);
++  AP.OutStreamer.EmitIntValue(NumDescriptors, IntPtrSize);
+ 
+   for (iterator I = begin(), IE = end(); I != IE; ++I) {
+     GCFunctionInfo &FI = **I;
