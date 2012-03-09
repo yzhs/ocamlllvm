@@ -80,16 +80,12 @@ let insert_debug seq desc dbg arg res typ =
 let add_type name typ =
   Hashtbl.replace types name typ
 
-let rec strip_addrs = function
-  | Address (Address _ as typ) -> strip_addrs typ
-  | typ -> typ
-
 let comment seq str = ignore (insert seq (Icomment str) [||] Nothing Void)
 
 let alloca seq name typ =
   assert (typ <> Void);
-  add_type name (strip_addrs (Address typ));
-  insert seq Ialloca [||] (Reg(name, strip_addrs (Address typ))) (deref (strip_addrs (Address typ)))
+  add_type name (Address typ);
+  insert seq Ialloca [||] (Reg(name, Address typ)) typ
 
 let load seq arg reg typ = insert seq Iload [|arg|] (new_reg reg typ) typ
 let store seq value addr typ = ignore (insert seq Istore [|value; addr|] Nothing typ)
@@ -105,8 +101,6 @@ let ifthenelse seq cond ifso ifnot =
   let typ = typeof (last_instr ifso).res in
   let typ = if typ = Void then typeof (last_instr ifnot).res else typ in
   insert seq (Iifthenelse(ifso, ifnot)) [|cond|] (if typ = Void then Nothing else (new_reg "if_result" typ)) typ
-
-let alloc seq len res typ = insert seq (Ialloc len) [||] (new_reg res typ) typ
 
 let binop seq op left right typ = insert seq (Ibinop op) [|left; right|] (new_reg "" typ) typ
 let comp seq op left right typ = insert seq (Icomp op) [|left; right|] (new_reg "" bit) typ
@@ -179,7 +173,7 @@ let rec caml_type expect = function
   | Cop(Cload mem, [arg]) ->
       let typ = translate_mem mem in
       ignore (caml_type (Address typ) arg);
-      if not (is_float typ) then int_type else typ
+      if not (is_float typ) then addr_type else typ
   | Cop(_,_) -> error "operation not available"
   | Csequence(fst,snd) -> ignore (caml_type Any fst); caml_type expect snd
   | Cifthenelse(cond, expr1, expr2) ->
@@ -208,10 +202,11 @@ let fabs = Const("@fabs", Address(Function(Double, [Double])))
 
 let reverse_instrs tmp = let seq = ref dummy_instr in List.iter (insert_instr_debug seq) !tmp; !seq
 
+let null = Const("null", addr_type);;
+
 let translate_float f =
   let x = Int64.bits_of_float (float_of_string f) in
   "0x" ^ Printf.sprintf "%Lx" x
-
 let rec compile_instr seq instr =
   match instr with
   | Cconst_int i ->
@@ -248,7 +243,10 @@ let rec compile_instr seq instr =
       let res_arg = compile_instr seq arg in
       let addr = assert (typ <> Void); alloca seq name typ in
       store seq res_arg addr typ;
-      compile_instr seq body
+      let result = compile_instr seq body in
+       (* This store might be the last instruction in a block.  Therefore it
+        * should return the actual result computed in that block: [res] *)
+      insert seq Istore [|null; addr|] result typ
   | Cassign(id, expr) ->
       print_debug "Cassign";
       let name = translate_id id in
@@ -273,29 +271,76 @@ let rec compile_instr seq instr =
       let args = List.map (compile_instr seq) args in
       let fn_type = Address(Function(addr_type, List.map (fun _ -> addr_type) args)) in
       let fn = compile_instr seq clos in
-      call seq fn (Array.of_list args) "call" fn_type
+      let store_arg arg =
+        let typ = typeof arg in
+        if is_addr typ then begin
+          let name = reg_name (new_reg "arg" Any) in
+          let name = String.sub name 1 (String.length name - 1) in
+          let res = alloca seq name typ in
+          comment seq "storing function argument on the stack...";
+          store seq arg res typ;
+          res
+        end else arg
+      in
+      let args = Array.of_list (List.map store_arg args) in
+      let load_arg arg =
+        let typ = typeof arg in
+        if is_addr typ then load seq arg "" (deref typ) else arg
+      in
+      call seq fn (Array.map load_arg args) "call" fn_type
   | Cop(Capply(_,_), []) -> error "no function specified"
   | Cop(Cextcall(fn, typ, alloc, debug), exprs) ->
       print_debug "Cextcall";
-      let args = List.map (compile_instr seq) exprs in
+      let store_arg arg =
+        let typ = typeof arg in
+        if is_addr typ then begin
+          let name = reg_name (new_reg "arg" Any) in
+          let name = String.sub name 1 (String.length name - 1) in
+          let res = alloca seq name typ in
+          comment seq "storing extcall argument on the stack...";
+          store seq arg res typ;
+          res
+        end else arg
+      in
+      let args = List.map (fun x -> store_arg (compile_instr seq x)) exprs in
       Emit_common.add_function (translate_machtype typ, "ccc", fn, args);
       let fn_type = Address(Function(translate_machtype typ, List.map (fun _ -> addr_type) args)) in
       add_type fn fn_type;
-      extcall seq (Const("@" ^ fn, fn_type)) (Array.of_list args) "extcall" fn_type alloc
+      let load_arg arg =
+        let typ = typeof arg in
+        if is_addr typ then load seq arg "" (deref typ) else arg
+      in
+      extcall seq (Const("@" ^ fn, fn_type)) (Array.map load_arg (Array.of_list args)) "extcall" fn_type alloc
   | Cop(Calloc, args) -> (* TODO figure out how much space a single element needs *)
       print_debug "Calloc";
       let args = List.map (compile_instr seq) args in
-      let alloc = alloc seq (List.length args) "alloc" addr_type in
-      let alloc = getelemptr seq alloc (Const("1", int_type)) addr_type in
+      let alloc_res = new_reg "alloc" addr_type in
+      let store_arg arg =
+        let typ = typeof arg in
+        if is_addr typ then begin
+          let name = reg_name (new_reg "arg" Any) in
+          let name = String.sub name 1 (String.length name - 1) in
+          let res = alloca seq name typ in
+          comment seq "storing alloc argument on the stack...";
+          store seq arg res typ;
+          res
+        end else arg
+      in
+      let ptr = insert seq (Ialloc (List.length args)) [||] alloc_res addr_type in
+      let alloc = getelemptr seq ptr (Const("1", int_type)) addr_type in
       let num = ref (-1) in
       let emit_arg elem =
         let counter = string_of_int !num in
-        let elemptr = getelemptr seq alloc (Const(counter, int_type)) addr_type in
         num := !num + 1;
+        let typ = typeof elem in
+        let elemptr = getelemptr seq alloc (Const(counter, int_type)) addr_type in
+        let value = if is_addr typ then load seq elem "" typ else elem in
+        if is_addr typ then store seq (Const("null", addr_type)) elem (deref typ);
         (* The store itself returns [Nothing] but the enclosing blocks result is
-        * [alloc].                                  vvvvv                     *)
-        ignore (insert seq Istore [|elem; elemptr|] alloc (typeof elem))
+         * [alloc].                                  vvvvv                     *)
+        ignore (insert seq Istore [|value; elemptr|] alloc typ)
       in
+      let args = List.map store_arg args in
       List.iter emit_arg args;
       alloc
   | Cop(Cstore mem, [addr; value]) ->
@@ -404,7 +449,7 @@ and compile_operation seq op = function
       match op with
       | Cfloatofint -> insert seq Isitofp [|arg|] (new_reg "float_of_int" Double) Double
       | Cintoffloat -> insert seq Ifptosi [|arg|] (new_reg "int_of_float" float_sized_int) float_sized_int
-      | Cabsf -> extcall seq fabs [|arg|] "absf_res" (Address(Function(Double, [Double]))) false
+      | Cabsf -> extcall seq fabs [|arg|] "absf" (Address(Function(Double, [Double]))) false
       | Cnegf -> binop seq Op_subf (Const("0.0", Double)) arg Double
       | Cload mem ->
           let typ = translate_mem mem in
@@ -426,8 +471,11 @@ let fundecl = function
     let args = List.map (fun (x, typ) -> (translate_symbol (Ident.unique_name x), addr_type)) args in
     try
       let foo (x, typ) =
+        (*
         let typ = try Hashtbl.find types x with Not_found -> addr_type in
         let typ = if is_int typ then typ else addr_type in
+         *)
+        let typ = addr_type in
         store tmp_seq (Reg("param." ^ x, addr_type)) (assert (typ <> Void); alloca tmp_seq x typ) typ
       in
       List.iter foo args;

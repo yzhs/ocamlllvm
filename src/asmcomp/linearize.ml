@@ -23,8 +23,7 @@ and instruction_desc =
   | Lop of binop
   | Lfptosi | Lsitofp
   | Lalloca | Lload | Lstore | Lgetelemptr
-  | Lcall of register | Lextcall of register | Linvoke of register * label * label
-  | Llandingpad
+  | Lcall of register | Lextcall of register
   | Lreturn
   | Llabel of label
   | Lbranch of label
@@ -87,7 +86,7 @@ let reverse_instrs tmp =
 
 
 
-let cast_reg value dest_typ reg =
+let rec cast_reg value dest_typ reg =
   let typ = typeof value in
   let cast op value reg = insert (Lcast op) [|value|] reg in
   begin
@@ -96,6 +95,7 @@ let cast_reg value dest_typ reg =
     | (Integer i, Integer j) when i < j -> cast Zext value reg
     | (Integer i, Integer j) when i > j -> cast Trunc value reg
     | (Integer i, Address _) when i = size_int * 8 -> cast Inttoptr value reg
+    | (Integer i, Address _) -> cast Inttoptr (cast_reg value int_type (new_reg "" int_type)) reg
     | (Integer i, Double) when i = size_float * 8 -> cast Bitcast value reg
     | (Integer _, Function(_,_)) -> cast Bitcast value reg
     | (Double, Integer i) when i = size_float * 8 -> cast Bitcast value reg
@@ -202,10 +202,8 @@ let rec linear i =
           let stackpointer = new_reg "sp" (Address byte) in
           insert (Lextcall (Const("@llvm.stacksave", Function(byte, [])))) [||] stackpointer;
           insert Lstore [|stackpointer; Const("@caml_bottom_of_stack", Address (Address byte))|] Nothing;
-          insert (Linvoke(cast fn typ, ret_lbl, dummy_lbl)) (Array.mapi (fun i arg -> cast arg arg_typ.(i)) args) res;
-          label dummy_lbl;
-          insert_simple Llandingpad;
-          insert_simple Lunreachable;
+          insert (Lextcall (cast fn typ)) (Array.mapi (fun i arg -> cast arg arg_typ.(i)) args) res;
+          branch ret_lbl;
           label ret_lbl
         else
           insert (Lextcall (cast fn typ)) (Array.mapi (fun i arg -> cast arg arg_typ.(i)) args) res
@@ -364,17 +362,19 @@ let rec linear i =
         label continue_lbl;
         insert Lload [|caml_young_ptr|] res
         (*
-        let alloc, args =
+        let alloc, arg_types, args =
           match len with
-            2 -> "@caml_alloc1", []
-          | 3 -> "@caml_alloc2", []
-          | 4 -> "@caml_alloc3", []
-          | _ -> "@caml_allocN", [addr_type]
+            2 -> "@caml_alloc1", [], [||]
+          | 3 -> "@caml_alloc2", [], [||]
+          | 4 -> "@caml_alloc3", [], [||]
+          | _ ->
+              "@caml_allocN", [addr_type],
+              [|Const("inttoptr(" ^ string_of_type int_type ^ " " ^
+                      string_of_int (len-1) ^ " to " ^ string_of_type addr_type ^
+                      ")", addr_type)|]
         in
-        insert (Lextcall (Const(alloc, Function(addr_type, args))))
-          (if len > 4 then [|Const("inttoptr(" ^ string_of_type int_type ^ " " ^ string_of_int (len-1) ^ " to " ^ string_of_type addr_type ^ ")", addr_type)|] else [||]) res
-        *)
-
+        insert (Lextcall (Const(alloc, Function(addr_type, arg_types)))) args res
+         *)
         (* TODO tell LLVM that the garbage collection is unlikely *)
     | _, _ -> error ("unknown instruction:\n" ^ Printmach.instr_to_string i)
   end; linear next end

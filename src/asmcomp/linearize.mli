@@ -19,8 +19,7 @@ and instruction_desc =
   | Lop of binop
   | Lfptosi | Lsitofp
   | Lalloca | Lload | Lstore | Lgetelemptr
-  | Lcall of register | Lextcall of register | Linvoke of register * label * label
-  | Llandingpad
+  | Lcall of register | Lextcall of register
   | Lreturn
   | Llabel of label
   | Lbranch of label

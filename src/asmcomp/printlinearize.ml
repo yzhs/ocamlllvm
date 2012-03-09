@@ -23,8 +23,6 @@ let print_instr instr = begin
   | Lsitofp -> print_string (string_of_reg res ^ " = sitofp")
   | Lcall fn -> print_string (string_of_reg res ^ " = call " ^ string_of_reg fn)
   | Lextcall fn -> print_string (string_of_reg res ^ " = extcall " ^ string_of_reg fn)
-  | Linvoke(fn, lbl, dummy) -> print_string (string_of_reg res ^ " = invoke " ^ string_of_reg fn ^ " return to " ^ lbl ^ " exception to " ^ dummy)
-  | Llandingpad -> print_string ("landingpad ...")
   | Llabel name -> print_string ("label " ^ name)
   | Lbranch name -> print_string ("branch " ^ name)
   | Lcondbranch(ifso, ifnot) -> print_string ("branch " ^ ifso ^ ", " ^ ifnot)

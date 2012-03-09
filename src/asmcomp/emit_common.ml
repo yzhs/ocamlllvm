@@ -80,10 +80,6 @@ let emit_llvm instr =
   | Lsitofp, [|value|], Reg(_, typ) -> emit_cast res "sitofp" value typ
   | Lcall fn, args, _ -> emit_call res calling_conv fn args
   | Lextcall fn, args, _ -> emit_call res "ccc" fn args
-  | Linvoke(fn, lbl, dummy), args, _ ->
-      emit_instr ((if res <> Nothing then reg_name res ^ " = " else "") ^ "invoke ccc " ^ string_of_type(typeof res) ^ " " ^ reg_name fn ^ "(" ^
-                  Printlinearize.print_array string_of_reg args ^ ") nounwind to label %" ^ lbl ^ " unwind label %" ^ dummy)
-  | Llandingpad, [||], Nothing -> emit_instr ("%foo" ^ c () ^ " = landingpad i8 personality i32 (...)* @__gxx_personality_v0 catch i8* @...")
   | Llabel name, [||], Nothing -> emit_label name
   | Lbranch lbl, [||], Nothing -> emit_instr ("br label %" ^ lbl)
   | Lcondbranch(then_label, else_label), [|cond|], Nothing ->
@@ -110,7 +106,6 @@ let emit_llvm instr =
   | Lgetelemptr, _, _ -> error ("getelemptr with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lfptosi, _, _ -> error ("fptosi with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lsitofp, _, _ -> error ("sitofp with " ^ string_of_int (Array.length arg) ^ " arguments")
-  | Llandingpad, _, _ -> error ("landingpad with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Llabel name, _, _ -> error ("label with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lbranch lbl, _, _ -> error ("branch with " ^ string_of_int (Array.length arg) ^ " arguments")
   | Lcondbranch(then_label, else_label), _, _ -> error ("condbranch with " ^ string_of_int (Array.length arg) ^ " arguments")
@@ -155,17 +150,12 @@ let header =
   ; "declare double @fabs(double) nounwind"
   ; "declare void @llvm.gcroot(i8**, i8*) nounwind"
   ; "declare i8* @llvm.stacksave()"
-  ; "declare i32 @__gxx_personality_v0(...)"
-  (*
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc1() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc2() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_alloc3() nounwind"
   ; "declare " ^ calling_conv ^ " " ^ addr_type ^ " @caml_allocN(" ^ addr_type ^ ") nounwind"
-  *)
   ; "declare void @caml_ml_array_bound_error() nounwind"
   ; "declare void @caml_call_gc() nounwind"
-
-  ; "@... = internal constant i8 1"
 
   ; "@caml_young_ptr = external global " ^ addr_type
   ; "@caml_young_limit = external global " ^ addr_type
