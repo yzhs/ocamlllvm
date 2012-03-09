@@ -202,14 +202,14 @@ FUNCTION(G(caml_call_gc))
 
 FUNCTION(G(caml_alloc1))
 .Lcaml_alloc1:
-	LOAD_VAR(caml_young_ptr, %r11)
-	subq	$16, %r11
-        CMP_VAR(caml_young_limit, %r11)
+	LOAD_VAR(caml_young_ptr, %rax)
+	subq	$16, %rax
+        CMP_VAR(caml_young_limit, %rax)
         jb      .L100
         ret
 .L100:
         RECORD_STACK_FRAME(0)
-	STORE_VAR(%r11, caml_young_ptr)
+	STORE_VAR(%rax, caml_young_ptr)
 	subq	$8, %rsp
         call    .Lcaml_call_gc
 	addq	$8, %rsp
@@ -217,14 +217,14 @@ FUNCTION(G(caml_alloc1))
 
 FUNCTION(G(caml_alloc2))
 .Lcaml_alloc2:
-	LOAD_VAR(caml_young_ptr, %r11)
-	subq	$24, %r11
-        CMP_VAR(caml_young_limit, %r11)
+	LOAD_VAR(caml_young_ptr, %rax)
+	subq	$24, %rax
+        CMP_VAR(caml_young_limit, %rax)
         jb      .L101
         ret
 .L101:
         RECORD_STACK_FRAME(0)
-	STORE_VAR(%r11, caml_young_ptr)
+	STORE_VAR(%rax, caml_young_ptr)
 	subq	$8, %rsp
         call    .Lcaml_call_gc
 	addq	$8, %rsp
@@ -232,14 +232,14 @@ FUNCTION(G(caml_alloc2))
 
 FUNCTION(G(caml_alloc3))
 .Lcaml_alloc3:
-	LOAD_VAR(caml_young_ptr, %r11)
-	subq	$32, %r11
-        CMP_VAR(caml_young_limit, %r11)
+	LOAD_VAR(caml_young_ptr, %rax)
+	subq	$32, %rax
+        CMP_VAR(caml_young_limit, %rax)
         jb      .L102
         ret
 .L102:
         RECORD_STACK_FRAME(0)
-	STORE_VAR(%r11, caml_young_ptr)
+	STORE_VAR(%rax, caml_young_ptr)
 	subq	$8, %rsp
         call    .Lcaml_call_gc
 	addq	$8, %rsp
