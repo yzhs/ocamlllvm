@@ -20,7 +20,7 @@ and instruction_desc =
   | Ibinop of binop
   | Icomp of comp
   | Ialloca | Iload | Istore
-  | Isitofp | Ifptosi
+  | Isitofp | Ifptosi | Izext | Isext
   | Igetelementptr
   | Icall of register | Iextcall of register * bool
   | Iifthenelse of instruction * instruction

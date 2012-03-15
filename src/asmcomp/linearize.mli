@@ -3,7 +3,7 @@ open Mach
 
 type label = string
 
-type cast = Zext | Trunc | Bitcast | Inttoptr | Ptrtoint
+type cast = Zext | Sext | Trunc | Bitcast | Inttoptr | Ptrtoint
 
 type instruction =
   { mutable desc: instruction_desc;

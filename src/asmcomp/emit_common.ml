@@ -70,7 +70,7 @@ let emit_llvm instr =
   | Lcast op, [|value|], Reg(_, typ) ->
       emit_cast res (string_of_cast op) value typ
   | Lalloca, [||], Reg(_, typ) ->
-      emit_instr (reg_name res ^ " = alloca " ^ string_of_type (try deref typ with Cast_error s -> error "dereferencing result type of Lalloca failed"))
+      emit_instr (reg_name res ^ " = alloca " ^ string_of_type (deref typ))
   | Lload, [|addr|], Reg(_, _) -> emit_op res "load" (typeof addr) [addr]
   | Lstore, [|value; addr|], Nothing ->
       emit_instr ("store " ^ arg_list [value; addr])
@@ -92,8 +92,7 @@ let emit_llvm instr =
                   String.concat "\n\t\t" (Array.to_list (Array.mapi fn lbls)) ^
                   "\n\t]")
   | Lreturn, [||], Nothing -> emit_instr "ret void"
-  | Lreturn, [|value|], Nothing ->
-      emit_instr ("ret " ^ string_of_reg value)
+  | Lreturn, [|value|], Nothing -> emit_instr ("ret " ^ string_of_reg value)
   | Lunreachable, [||], Nothing -> emit_instr "unreachable"
   | Lcomment s, [||], Nothing -> emit_instr ("; " ^ s)
 
@@ -170,8 +169,6 @@ let constants : string list ref = ref []
 let functions : (string * string * string * string list) list ref = ref []
 
 let local_functions = ref []
-
-let module_asm () = emit_string "module asm \""
 
 let add_const str =
   if List.exists (fun x -> String.compare x str == 0) !constants

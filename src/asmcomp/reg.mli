@@ -26,11 +26,16 @@ val float_sized_int : llvm_type
 val byte : llvm_type
 (* 1 bit *)
 val bit : llvm_type
+(* Create a function type given the return and argument types *)
+val function_type : llvm_type -> llvm_type list -> llvm_type
 
 val is_addr : llvm_type -> bool
 val is_float : llvm_type -> bool
 val is_int : llvm_type -> bool
+val is_function : llvm_type -> bool
 
+val ret_type : llvm_type -> llvm_type
+val arg_types : llvm_type -> llvm_type list
 
 (* Turn an llvm_type into the string used by LLVM to represent that type. *)
 val string_of_type : llvm_type -> string

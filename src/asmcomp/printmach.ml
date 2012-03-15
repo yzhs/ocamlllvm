@@ -21,6 +21,10 @@ let rec instr_to_string instr =
   | Istore, [|value; addr|] ->
        "store " ^ string_of_reg value ^ " " ^ string_of_reg addr
   | Istore, args -> error ("using store with " ^ string_of_int (Array.length args) ^ " arguments")
+  | Izext, [|value|] -> typ_str ^ "zext " ^ reg_name value
+  | Izext, args -> error ("using zext with " ^ string_of_int (Array.length args) ^ " arguments")
+  | Isext, [|value|] -> typ_str ^ "sext " ^ reg_name value
+  | Isext, args -> error ("using sext with " ^ string_of_int (Array.length args) ^ " arguments")
   | Ifptosi, [|value|] -> typ_str ^ "fptosi " ^ reg_name value
   | Ifptosi, args -> error ("using fptosi with " ^ string_of_int (Array.length args) ^ " arguments")
   | Isitofp, [|value|] -> typ_str ^ "sitofp " ^ reg_name value
