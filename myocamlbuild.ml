@@ -527,12 +527,30 @@ List.iter
 (* Generate architecture specific emit file from emit.mlp *)
 let emit_mlp = "src/asmcomp"/arch/"emit.mlp" in
 rule "emit.mlp"
-  ~prod:("src/asmcomp/emit.ml")
+  ~prod:"src/asmcomp/emit.ml"
   ~deps:[emit_mlp; "tools/cvt_emit"]
   begin fun _ _ ->
     Cmd(S[A"ocamlrun"; P"tools/cvt_emit"; Sh "<"; P emit_mlp;
           Sh">"; Px"src/asmcomp/emit.ml"])
   end;;
+
+(* The version number *)
+rule "src/stdlib/sys.ml"
+  ~prod:"src/stdlib/sys.ml"
+  ~dep:"src/stdlib/sys.mlp"
+  begin fun _ _ ->
+    let version = BaseEnvLight.var_get "ocaml_version" env in
+    Seq [rm_f "src/stdlib/sys.ml";
+         Cmd (S[A"sed"; A"-e";
+                A(Printf.sprintf "s,%%%%VERSION%%%%,%s," version);
+                Sh"<"; P"src/stdlib/sys.mlp"; Sh">"; Px"src/stdlib/sys.ml"]);
+         chmod (A"-w") "src/stdlib/sys.ml"]
+  end;;
+
+(* We are building the standard library so we do not need the old one *)
+flag ["ocaml"; "compile"; "nostdlib"] (A"-nostdlib");;
+
+dep ["ocaml"; "foobar"] ["src/stdlib/pervasives.cmi"];;
 
           end in ()
       | _ ->

@@ -1,6 +1,14 @@
+# stdlib is build independently using ocamlbuild
+"src/stdlib": -traverse
+
+# asmrun is built using make
+"src/asmrun": -traverse
+
 <src/{asmcomp,bytecomp,driver,parsing,toplevel,typing,utils}>: include
-<src/*/*.ml{,i}>: pkg_dynlink, pkg_findlib
 #<src/*/*.mlp>: process_mlp
+
+<**/*.ml*>: warn_error_A
+
 
 # OASIS_START
 # DO NOT EDIT (digest: 07d21b1350eb56096d1bbcc0507aa988)

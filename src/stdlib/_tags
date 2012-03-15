@@ -1,0 +1,14 @@
+# The following rules are used to replace Compflags
+"stdlib.a" or "stdlib.cmxa" or "std_exit.o": precious
+
+true: -use_stdlib, -debug
+
+<*.ml*>: warn_error_A
+
+<pervasives.mli>: nopervasives
+<camlinternalOO.ml>: inline(0)
+<scanf.ml>: inline(9)
+<arrayLabels.ml>: nolabels
+<listLabels.ml>: nolabels
+<stringLabels.ml>: nolabels
+<moreLabels.ml>: nolabels
