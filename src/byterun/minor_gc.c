@@ -117,6 +117,8 @@ void caml_oldify_one (value v, value *p)
 
  tail_call:
   if (Is_block (v) && Is_young (v)){
+    if (Hp_val(v) < caml_young_ptr)
+      printf("%lx, %lx\n", Hp_val(v), caml_young_ptr);
     Assert (Hp_val (v) >= caml_young_ptr);
     hd = Hd_val (v);
     if (hd == 0){         /* If already forwarded */

@@ -92,6 +92,8 @@ void caml_darken (value v, value *p /* not used */)
       h = Hd_val (v);
       t = Tag_hd (h);
     }
+    if (Is_blue_hd(h))
+      printf("%lx\n", h);
     CAMLassert (!Is_blue_hd (h));
     if (Is_white_hd (h)){
       if (t < No_scan_tag){
