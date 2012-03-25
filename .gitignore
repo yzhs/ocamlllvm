@@ -4,3 +4,7 @@ setup.log
 src/utils/config.ml
 *.byte
 *.native
+*.[ao]
+*.cm?
+*.cmxa
+src/asmrun/*.c

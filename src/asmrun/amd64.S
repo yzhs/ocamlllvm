@@ -127,76 +127,10 @@
 FUNCTION(G(caml_call_gc))
         RECORD_STACK_FRAME(0)
 .Lcaml_call_gc:
-    /* Build array of registers, save it into caml_gc_regs */
-	pushq	%r15
-	pushq	%r14
-        pushq   %r13
-        pushq   %r12
-        pushq   %rbp
-        pushq   %r11
-        pushq   %r10
-        pushq   %r9
-        pushq   %r8
-        pushq   %rcx
-        pushq   %rdx
-        pushq   %rsi
-        pushq   %rdi
-        pushq   %rbx
-        pushq   %rax
-        STORE_VAR(%rsp, caml_gc_regs)
-    /* Save floating-point registers */
-        subq    $(16*8), %rsp
-        movsd   %xmm0, 0*8(%rsp)
-        movsd   %xmm1, 1*8(%rsp)
-        movsd   %xmm2, 2*8(%rsp)
-        movsd   %xmm3, 3*8(%rsp)
-        movsd   %xmm4, 4*8(%rsp)
-        movsd   %xmm5, 5*8(%rsp)
-        movsd   %xmm6, 6*8(%rsp)
-        movsd   %xmm7, 7*8(%rsp)
-        movsd   %xmm8, 8*8(%rsp)
-        movsd   %xmm9, 9*8(%rsp)
-        movsd   %xmm10, 10*8(%rsp)
-        movsd   %xmm11, 11*8(%rsp)
-        movsd   %xmm12, 12*8(%rsp)
-        movsd   %xmm13, 13*8(%rsp)
-        movsd   %xmm14, 14*8(%rsp)
-        movsd   %xmm15, 15*8(%rsp)
+	subq	$8, %rsp
     /* Call the garbage collector */
         call    GCALL(caml_garbage_collection)
-    /* Restore all regs used by the code generator */
-        movsd   0*8(%rsp), %xmm0
-        movsd   1*8(%rsp), %xmm1
-        movsd   2*8(%rsp), %xmm2
-        movsd   3*8(%rsp), %xmm3
-        movsd   4*8(%rsp), %xmm4
-        movsd   5*8(%rsp), %xmm5
-        movsd   6*8(%rsp), %xmm6
-        movsd   7*8(%rsp), %xmm7
-        movsd   8*8(%rsp), %xmm8
-        movsd   9*8(%rsp), %xmm9
-        movsd   10*8(%rsp), %xmm10
-        movsd   11*8(%rsp), %xmm11
-        movsd   12*8(%rsp), %xmm12
-        movsd   13*8(%rsp), %xmm13
-        movsd   14*8(%rsp), %xmm14
-        movsd   15*8(%rsp), %xmm15
-        addq    $(16*8), %rsp
-        popq    %rax
-        popq    %rbx
-        popq    %rdi
-        popq    %rsi
-        popq    %rdx
-        popq    %rcx
-        popq    %r8
-        popq    %r9
-        popq    %r10
-        popq    %r11
-        popq    %rbp
-        popq    %r12
-        popq    %r13
-	popq	%r14
-	popq	%r15
+	addq	$8, %rsp
     /* Return to caller */
         ret
 
@@ -204,12 +138,12 @@ FUNCTION(G(caml_alloc1))
 .Lcaml_alloc1:
 	LOAD_VAR(caml_young_ptr, %rax)
 	subq	$16, %rax
+	STORE_VAR(%rax, caml_young_ptr)
         CMP_VAR(caml_young_limit, %rax)
         jb      .L100
         ret
 .L100:
         RECORD_STACK_FRAME(0)
-	STORE_VAR(%rax, caml_young_ptr)
 	subq	$8, %rsp
         call    .Lcaml_call_gc
 	addq	$8, %rsp
@@ -219,12 +153,12 @@ FUNCTION(G(caml_alloc2))
 .Lcaml_alloc2:
 	LOAD_VAR(caml_young_ptr, %rax)
 	subq	$24, %rax
+	STORE_VAR(%rax, caml_young_ptr)
         CMP_VAR(caml_young_limit, %rax)
         jb      .L101
         ret
 .L101:
         RECORD_STACK_FRAME(0)
-	STORE_VAR(%rax, caml_young_ptr)
 	subq	$8, %rsp
         call    .Lcaml_call_gc
 	addq	$8, %rsp
@@ -234,12 +168,12 @@ FUNCTION(G(caml_alloc3))
 .Lcaml_alloc3:
 	LOAD_VAR(caml_young_ptr, %rax)
 	subq	$32, %rax
+	STORE_VAR(%rax, caml_young_ptr)
         CMP_VAR(caml_young_limit, %rax)
         jb      .L102
         ret
 .L102:
         RECORD_STACK_FRAME(0)
-	STORE_VAR(%rax, caml_young_ptr)
 	subq	$8, %rsp
         call    .Lcaml_call_gc
 	addq	$8, %rsp
@@ -249,14 +183,15 @@ FUNCTION(G(caml_allocN))
 .Lcaml_allocN:
 	LOAD_VAR(caml_young_ptr, %rax)
 	subq	%rdi, %rax
+	STORE_VAR(%rax, caml_young_ptr)
         CMP_VAR(caml_young_limit, %rax)
 	jb	.L103
         ret
 .L103:
         RECORD_STACK_FRAME(8)
-	sub	$8, %rsp
+	pushq	%rdi
 	call	.Lcaml_call_gc
-	addq 	$8, %rsp
+	popq	%rdi
         jmp     .Lcaml_allocN
 
 
@@ -297,8 +232,6 @@ FUNCTION(G(caml_start_program))
     /* Common code for caml_start_program and caml_callback* */
 .Lcaml_start_program:
     /* Build a callback link */
-	subq	$8, %rsp	/* stack 16-aligned */
-        PUSH_VAR(caml_gc_regs)
         PUSH_VAR(caml_last_return_address)
         PUSH_VAR(caml_bottom_of_stack)
 	movq	%rdi, %rbp
@@ -314,8 +247,6 @@ FUNCTION(G(caml_start_program))
     /* Pop the callback link, restoring the global variables */
 	POP_VAR(caml_bottom_of_stack)
         POP_VAR(caml_last_return_address)
-        POP_VAR(caml_gc_regs)
-	addq	$8, %rsp
     /* Restore callee-save registers. */
 	addq	$8, %rsp
         popq    %r15

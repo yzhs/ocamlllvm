@@ -94,7 +94,7 @@ let comment seq str = ignore (insert seq (Icomment str) [||] Nothing Void)
 let alloca seq name typ =
   assert (typ <> Void);
   add_type name (Address addr_type);
-  insert seq Ialloca [||] (Reg(name, Address typ)) typ
+  insert seq Ialloca [||] (Reg(name, Address (if is_addr typ then addr_type else typ))) typ
 
 let load seq arg reg typ = insert seq Iload [|arg|] (new_reg reg typ) typ
 let store seq value addr typ = ignore (insert seq Istore [|value; addr|] Nothing typ)
@@ -460,7 +460,7 @@ and store_arg seq arg =
   if (*is_addr typ*) true then begin
     let name = reg_name (new_reg "arg" Any) in
     let name = String.sub name 1 (String.length name - 1) in
-    let res = alloca seq name typ in
+    let res = alloca seq name addr_type in
     comment seq "storing argument on the stack...";
     store seq arg res typ;
     res

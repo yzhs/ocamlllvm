@@ -122,7 +122,8 @@ let alloca result =
     Hashtbl.add allocas (reg_name result) {desc = Lalloca; next = end_instr; arg = [||]; res = result; dbg = Debuginfo.none};
     if is_addr (deref (typeof result)) then
       insert (Lextcall (global "llvm.gcroot" (function_type Void [Address (Address byte); Address byte])))
-        [|cast result (Address (Address byte)); const "null" (Address byte)|] Nothing;
+        [|cast result (Address (Address byte)); const "null" (Address byte)|] Nothing
+    else insert_simple (Lcomment "not a pointer, skipping call to llvm.gcroot");
     result
   end
 
